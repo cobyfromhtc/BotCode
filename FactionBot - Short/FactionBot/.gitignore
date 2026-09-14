@@ -1,0 +1,14 @@
+tokens.txt
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+bot.log
+bot.log.*
+bot-*.log
+bot_busy.lock
+data/*.db-shm
+data/*.db-wal
+data/.tutorial_sent

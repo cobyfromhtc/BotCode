@@ -1,0 +1,233 @@
+2026-08-30 09:26:04,020 - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-08-30 09:26:04,021 - WARNING - davey is not installed, voice will NOT be supported
+2026-08-30 09:26:04,033 - INFO - [tickettool.commands] registered Tier 1 + Tier 2 + Tier 3 prefix commands
+2026-08-30 09:26:04,033 - INFO - [Premium] registered Tier 1 prefix commands (guild-scoped to [1471662897397633034, 1163937669068357844])
+2026-08-30 09:26:04,036 - INFO - [ReactionRoles] registered rr prefix group + 5 subcommands
+2026-08-30 09:26:04,036 - INFO - [ReactionRoles] registered rr prefix group + 5 subcommands (guild-scoped to [1471662897397633034, 1163937669068357844])
+2026-08-30 09:26:04,055 - INFO - Token found in: C:\Users\User\Desktop\FactionBot\tokens.txt
+2026-08-30 09:26:04,059 - INFO - logging in using static token
+2026-08-30 09:26:04,856 - INFO - [DataManager] Connected to database: data/bot_data.db
+2026-08-30 09:26:09,861 - WARNING - [OWS] use_bot_status apply error: 
+2026-08-30 09:26:09,861 - INFO - [OWS] Hydrated 71 owner settings — 59/71 enabled
+2026-08-30 09:26:09,867 - INFO - [Blacklist] Loaded 0 blacklisted keywords from SQLite
+2026-08-30 09:26:09,869 - INFO - [RulesCache] Loaded cached rules from SQLite
+2026-08-30 09:26:09,870 - INFO - [Giveaways] Loaded 0 giveaway(s) from SQLite
+2026-08-30 09:26:09,870 - INFO - [Levels] Loaded 2 user levels from SQLite
+2026-08-30 09:26:09,871 - INFO - [Import] No JSON files found to import
+2026-08-30 09:26:09,871 - INFO - [SetupHook] One-time initialization complete (DB + caches + generic views)
+2026-08-30 09:26:09,872 - INFO - [tickettool.db] Tier 1 + Tier 2 + Tier 3 schema installed (idempotent).
+2026-08-30 09:26:09,873 - INFO - [tickettool.wiring] schema installed + premium_db attached
+2026-08-30 09:26:09,873 - INFO - [ReactionRoles] global refs set
+2026-08-30 09:26:09,873 - INFO - [reactionroles.wiring] schema installed + reaction_roles_db attached
+2026-08-30 09:26:09,874 - WARNING - [Presence] Could not apply bot status: 'NoneType' object has no attribute 'change_presence'
+2026-08-30 09:26:10,886 - INFO - [DataManager] All persistent data saved to SQLite.
+2026-08-30 09:28:19,807 - INFO - Shutdown signal received. Saving data...
+2026-08-30 09:28:19,807 - INFO - [DataManager] All persistent data saved to SQLite.
+2026-08-30 09:28:19,814 - INFO - [DataManager] Database connection closed
+2026-08-30 09:28:19,814 - INFO - Data saved. Goodbye!
+2026-08-30 09:28:20,410 - INFO - Shutdown signal received. Saving data...
+2026-08-30 09:28:20,410 - ERROR - [Blacklist] Error saving data: Cannot operate on a closed database.
+2026-08-30 09:28:20,410 - ERROR - [RulesCache] Error saving: Cannot operate on a closed database.
+2026-08-30 09:28:20,410 - ERROR - [Levels] Error saving data: Cannot operate on a closed database.
+2026-08-30 09:28:20,411 - INFO - [DataManager] All persistent data saved to SQLite.
+2026-08-30 09:28:20,411 - INFO - [DataManager] Database connection closed
+2026-08-30 09:28:20,412 - INFO - Data saved. Goodbye!
+2026-08-30 15:15:05,633 - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-08-30 15:15:05,644 - WARNING - davey is not installed, voice will NOT be supported
+2026-08-30 15:15:05,695 - INFO - [tickettool.commands] registered Tier 1 + Tier 2 + Tier 3 prefix commands
+2026-08-30 15:15:05,698 - INFO - [Premium] registered Tier 1 prefix commands
+2026-08-30 15:15:05,705 - INFO - [ReactionRoles] registered rr prefix group + 5 subcommands
+2026-08-30 15:15:05,706 - INFO - [ReactionRoles] registered rr prefix group + 5 subcommands
+2026-08-30 15:15:05,754 - INFO - Token found in: c:\Users\User\Desktop\FactionBot\tokens.txt
+2026-08-30 15:15:05,756 - INFO - logging in using static token
+2026-08-30 15:15:08,871 - INFO - [DataManager] Connected to database: data/bot_data.db
+2026-08-30 15:15:13,880 - WARNING - [OWS] use_bot_status apply error: 
+2026-08-30 15:15:13,882 - INFO - [OWS] Hydrated 71 owner settings — 59/71 enabled
+2026-08-30 15:15:13,882 - INFO - [Blacklist] Loaded 0 blacklisted keywords from SQLite
+2026-08-30 15:15:13,890 - INFO - [RulesCache] Loaded cached rules from SQLite
+2026-08-30 15:15:13,891 - INFO - [Giveaways] Loaded 0 giveaway(s) from SQLite
+2026-08-30 15:15:13,891 - INFO - [Levels] Loaded 2 user levels from SQLite
+2026-08-30 15:15:13,892 - INFO - [Import] No JSON files found to import
+2026-08-30 15:15:13,892 - INFO - [SetupHook] One-time initialization complete (DB + caches + generic views)
+2026-08-30 15:15:13,894 - INFO - [tickettool.db] Tier 1 + Tier 2 + Tier 3 schema installed (idempotent).
+2026-08-30 15:15:13,894 - INFO - [tickettool.wiring] schema installed + premium_db attached
+2026-08-30 15:15:13,894 - INFO - [ReactionRoles] global refs set
+2026-08-30 15:15:13,894 - INFO - [reactionroles.wiring] schema installed + reaction_roles_db attached
+2026-08-30 15:15:13,895 - WARNING - [Presence] Could not apply bot status: 'NoneType' object has no attribute 'change_presence'
+2026-08-30 15:16:13,906 - ERROR - Attempting a reconnect in 1.70s
+Traceback (most recent call last):
+  File "C:\Python314\Lib\asyncio\tasks.py", line 488, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "c:\Users\User\Desktop\FactionBot\.venv\Lib\site-packages\discord\gateway.py", line 392, in from_client
+    socket = await client.http.ws_connect(str(url))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\User\Desktop\FactionBot\.venv\Lib\site-packages\discord\http.py", line 571, in ws_connect
+    return await self.__session.ws_connect(url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\User\Desktop\FactionBot\.venv\Lib\site-packages\aiohttp\client.py", line 1244, in _ws_connect
+    resp = await self.request(
+           ^^^^^^^^^^^^^^^^^^^
+    ...<11 lines>...
+    )
+    ^
+  File "c:\Users\User\Desktop\FactionBot\.venv\Lib\site-packages\aiohttp\client.py", line 856, in _request
+    resp = await handler(req)
+           ^^^^^^^^^^^^^^^^^^
+  File "c:\Users\User\Desktop\FactionBot\.venv\Lib\site-packages\aiohttp\client.py", line 834, in _connect_and_send_request
+    await resp.start(conn)
+  File "c:\Users\User\Desktop\FactionBot\.venv\Lib\site-packages\aiohttp\client_reqrep.py", line 558, in start
+    message, payload = await protocol.read()  # type: ignore[union-attr]
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\User\Desktop\FactionBot\.venv\Lib\site-packages\aiohttp\streams.py", line 705, in read
+    await self._waiter
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "c:\Users\User\Desktop\FactionBot\.venv\Lib\site-packages\discord\client.py", line 728, in connect
+    self.ws = await asyncio.wait_for(coro, timeout=60.0)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\asyncio\tasks.py", line 487, in wait_for
+    async with timeouts.timeout(timeout):
+               ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Python314\Lib\asyncio\timeouts.py", line 114, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-08-30 15:16:15,674 - INFO - [DataManager] All persistent data saved to SQLite.
+2026-08-30 15:45:43,548 - INFO - [Startup] Logging configured — beginning bot initialization...
+2026-08-30 15:45:43,663 - INFO - [InlinePackages] TicketTool (26 modules) + ReactionRoles (5 modules) loaded from inline source.
+2026-08-30 15:45:43,849 - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-08-30 15:45:43,849 - WARNING - davey is not installed, voice will NOT be supported
+2026-08-30 15:45:43,862 - INFO - [tickettool.commands] registered Tier 1 + Tier 2 + Tier 3 prefix commands
+2026-08-30 15:45:43,862 - INFO - [TicketTool] registered prefix commands (inline)
+2026-08-30 15:45:43,863 - INFO - [ReactionRoles] registered rr prefix group + 5 subcommands
+2026-08-30 15:45:43,864 - INFO - [ReactionRoles] registered prefix commands (inline)
+2026-08-30 15:45:43,892 - WARNING - [Startup] Loading tokens from '.env.example' (fallback). Rename it to '.env' for a cleaner setup.
+2026-08-30 15:45:43,893 - INFO - Token found in: c:\Users\User\Desktop\FactionBot\tokens.txt
+2026-08-30 15:45:43,894 - INFO - logging in using static token
+2026-08-30 15:45:45,159 - INFO - [DataManager] Connected to database: data/bot_data.db
+2026-08-30 15:45:50,168 - WARNING - [OWS] use_bot_status apply error: 
+2026-08-30 15:45:50,168 - INFO - [OWS] Hydrated 71 owner settings — 59/71 enabled
+2026-08-30 15:45:50,169 - INFO - [Blacklist] Loaded 0 blacklisted keywords from SQLite
+2026-08-30 15:45:50,170 - INFO - [RulesCache] Loaded cached rules from SQLite
+2026-08-30 15:45:50,170 - INFO - [Giveaways] Loaded 0 giveaway(s) from SQLite
+2026-08-30 15:45:50,170 - INFO - [Levels] Loaded 2 user levels from SQLite
+2026-08-30 15:45:50,171 - INFO - [Import] No JSON files found to import
+2026-08-30 15:45:50,172 - INFO - [SetupHook] One-time initialization complete (DB + caches + generic views)
+2026-08-30 15:45:50,173 - INFO - [tickettool.db] Tier 1 + Tier 2 + Tier 3 schema installed (idempotent).
+2026-08-30 15:45:50,174 - INFO - [tickettool.wiring] schema installed + premium_db attached
+2026-08-30 15:45:50,174 - INFO - [ReactionRoles] global refs set
+2026-08-30 15:45:50,174 - INFO - [reactionroles.wiring] schema installed + reaction_roles_db attached
+2026-08-30 15:45:50,175 - WARNING - [Presence] Could not apply bot status: 'NoneType' object has no attribute 'change_presence'
+2026-08-30 15:45:51,073 - INFO - Shard ID None session has been invalidated.
+2026-08-30 15:45:56,796 - INFO - [DataManager] All persistent data saved to SQLite.
+2026-08-30 15:48:05,695 - INFO - [Startup] Logging configured — beginning bot initialization...
+2026-08-30 15:48:05,814 - INFO - [InlinePackages] TicketTool (26 modules) + ReactionRoles (5 modules) loaded from inline source.
+2026-08-30 15:48:05,959 - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-08-30 15:48:05,959 - WARNING - davey is not installed, voice will NOT be supported
+2026-08-30 15:48:05,967 - INFO - [tickettool.commands] registered Tier 1 + Tier 2 + Tier 3 prefix commands
+2026-08-30 15:48:05,968 - INFO - [TicketTool] registered prefix commands (inline)
+2026-08-30 15:48:05,969 - INFO - [ReactionRoles] registered rr prefix group + 5 subcommands
+2026-08-30 15:48:05,969 - INFO - [ReactionRoles] registered prefix commands (inline)
+2026-08-30 15:48:05,986 - WARNING - [Startup] Loading tokens from '.env.example' (fallback). Rename it to '.env' for a cleaner setup.
+2026-08-30 15:48:05,987 - INFO - Token found in: c:\Users\User\Desktop\FactionBot\tokens.txt
+2026-08-30 15:48:05,988 - INFO - logging in using static token
+2026-08-30 15:48:06,812 - INFO - [DataManager] Connected to database: data/bot_data.db
+2026-08-30 15:48:11,822 - WARNING - [OWS] use_bot_status apply error: 
+2026-08-30 15:48:11,822 - INFO - [OWS] Hydrated 71 owner settings — 59/71 enabled
+2026-08-30 15:48:11,823 - INFO - [Blacklist] Loaded 0 blacklisted keywords from SQLite
+2026-08-30 15:48:11,830 - INFO - [RulesCache] Loaded cached rules from SQLite
+2026-08-30 15:48:11,830 - INFO - [Giveaways] Loaded 0 giveaway(s) from SQLite
+2026-08-30 15:48:11,830 - INFO - [Levels] Loaded 2 user levels from SQLite
+2026-08-30 15:48:11,831 - INFO - [Import] No JSON files found to import
+2026-08-30 15:48:11,831 - INFO - [SetupHook] One-time initialization complete (DB + caches + generic views)
+2026-08-30 15:48:11,832 - INFO - [tickettool.db] Tier 1 + Tier 2 + Tier 3 schema installed (idempotent).
+2026-08-30 15:48:11,833 - INFO - [tickettool.wiring] schema installed + premium_db attached
+2026-08-30 15:48:11,833 - INFO - [ReactionRoles] global refs set
+2026-08-30 15:48:11,833 - INFO - [reactionroles.wiring] schema installed + reaction_roles_db attached
+2026-08-30 15:48:11,834 - WARNING - [Presence] Could not apply bot status: 'NoneType' object has no attribute 'change_presence'
+2026-08-30 15:48:12,351 - INFO - [DataManager] All persistent data saved to SQLite.
+2026-08-30 15:49:52,986 - INFO - [Startup] Logging configured — beginning bot initialization...
+2026-08-30 15:49:53,111 - INFO - [InlinePackages] TicketTool (26 modules) + ReactionRoles (5 modules) loaded from inline source.
+2026-08-30 15:49:53,258 - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-08-30 15:49:53,258 - WARNING - davey is not installed, voice will NOT be supported
+2026-08-30 15:49:53,267 - INFO - [tickettool.commands] registered Tier 1 + Tier 2 + Tier 3 prefix commands
+2026-08-30 15:49:53,267 - INFO - [TicketTool] registered prefix commands (inline)
+2026-08-30 15:49:53,268 - INFO - [ReactionRoles] registered rr prefix group + 5 subcommands
+2026-08-30 15:49:53,269 - INFO - [ReactionRoles] registered prefix commands (inline)
+2026-08-30 15:49:53,286 - WARNING - [Startup] Loading tokens from '.env.example' (fallback). Rename it to '.env' for a cleaner setup.
+2026-08-30 15:49:53,287 - INFO - Token found in: c:\Users\User\Desktop\FactionBot\tokens.txt
+2026-08-30 15:49:53,289 - INFO - logging in using static token
+2026-08-30 15:49:53,875 - INFO - [DataManager] Connected to database: data/bot_data.db
+2026-08-30 15:49:58,887 - WARNING - [OWS] use_bot_status apply error: 
+2026-08-30 15:49:58,888 - INFO - [OWS] Hydrated 71 owner settings — 59/71 enabled
+2026-08-30 15:49:58,888 - INFO - [Blacklist] Loaded 0 blacklisted keywords from SQLite
+2026-08-30 15:49:58,895 - INFO - [RulesCache] Loaded cached rules from SQLite
+2026-08-30 15:49:58,895 - INFO - [Giveaways] Loaded 0 giveaway(s) from SQLite
+2026-08-30 15:49:58,895 - INFO - [Levels] Loaded 2 user levels from SQLite
+2026-08-30 15:49:58,896 - INFO - [Import] No JSON files found to import
+2026-08-30 15:49:58,898 - INFO - [SetupHook] One-time initialization complete (DB + caches + generic views)
+2026-08-30 15:49:58,899 - INFO - [tickettool.db] Tier 1 + Tier 2 + Tier 3 schema installed (idempotent).
+2026-08-30 15:49:58,899 - INFO - [tickettool.wiring] schema installed + premium_db attached
+2026-08-30 15:49:58,899 - INFO - [ReactionRoles] global refs set
+2026-08-30 15:49:58,899 - INFO - [reactionroles.wiring] schema installed + reaction_roles_db attached
+2026-08-30 15:49:58,901 - WARNING - [Presence] Could not apply bot status: 'NoneType' object has no attribute 'change_presence'
+2026-08-30 15:49:59,423 - INFO - Shard ID None has connected to Gateway (Session ID: 4e0c0c2728822ab48e1df29df1766a65).
+2026-08-30 15:50:01,437 - INFO - Bot started as The Lakaka Mafia (VPRP)
+2026-08-30 15:50:01,620 - INFO - [Slash Commands] Synced 0 global slash commands
+2026-08-30 15:50:01,621 - INFO - [InviteManager] Loaded 24 tracked invites from SQLite
+2026-08-30 15:50:01,621 - INFO - [TicketTool] Initialized ticket tool system
+2026-08-30 15:50:01,626 - INFO - [tickettool.wiring] on_ready hook complete
+2026-08-30 15:50:01,627 - INFO - [TicketTool] Registered views for panels
+2026-08-30 15:50:01,627 - INFO - [TicketTool] Registered views for multi-panels
+2026-08-30 15:50:02,539 - WARNING - [GetAllRoles] Could not refresh message 1541098338697609348 on startup: 403 Forbidden (error code: 50005): Cannot edit a message authored by another user
+2026-08-30 15:50:02,539 - INFO - [Blacklist] Started scheduled auto-scan task
+2026-08-30 15:50:02,540 - INFO - [Premium] (VPRP) 𝐁𝐎𝐑𝐍 𝐓𝐎 𝐊𝐈𝐋𝐋 #𝐑𝐄𝐀𝐋: RR=0/250 sticky=off msglog=on branding_footer=set
+2026-08-30 15:50:38,013 - INFO - idkanymore_039 purged all (4) messages in ✅・𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧
+2026-08-30 15:50:51,235 - INFO - [DataManager] purge_stale_data: preserving metadata for 14 closed ticket(s) (opt-in to delete)
+2026-08-30 15:50:51,655 - INFO - [DBCleanup] Cleanup run by idkanymore_039: {'closed_tickets': 0, 'closed_answers': 0, 'closed_notes': 0, 'closed_messages': 0, 'closed_transcripts': 0, 'orphan_answers': 0, 'orphan_notes': 1, 'orphan_messages': 5, 'orphan_transcripts': 0, 'orphan_questions': 0, 'orphaned_tickets_closed': 0, 'ticket_blacklist': 0, 'warnings': 0, 'invite_history': 1089}
+2026-08-30 15:51:00,160 - INFO - idkanymore_039 purged all (3) messages in ✅・𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧
+2026-08-30 15:51:04,930 - INFO - idkanymore_039 purged all (1) messages in ✅・𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧
+2026-08-30 15:51:42,729 - INFO - [Startup] Logging configured — beginning bot initialization...
+2026-08-30 15:51:42,903 - INFO - [InlinePackages] TicketTool (26 modules) + ReactionRoles (5 modules) loaded from inline source.
+2026-08-30 15:51:43,062 - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-08-30 15:51:43,062 - WARNING - davey is not installed, voice will NOT be supported
+2026-08-30 15:51:43,075 - INFO - [tickettool.commands] registered Tier 1 + Tier 2 + Tier 3 prefix commands
+2026-08-30 15:51:43,075 - INFO - [TicketTool] registered prefix commands (inline)
+2026-08-30 15:51:43,076 - INFO - [ReactionRoles] registered rr prefix group + 5 subcommands
+2026-08-30 15:51:43,077 - INFO - [ReactionRoles] registered prefix commands (inline)
+2026-08-30 15:51:43,127 - WARNING - [Startup] Loading tokens from '.env.example' (fallback). Rename it to '.env' for a cleaner setup.
+2026-08-30 15:51:43,128 - INFO - Token found in: c:\Users\User\Desktop\FactionBot\tokens.txt
+2026-08-30 15:51:43,136 - INFO - logging in using static token
+2026-08-30 15:51:44,014 - INFO - [DataManager] Connected to database: data/bot_data.db
+2026-08-30 15:51:49,023 - WARNING - [OWS] use_bot_status apply error: 
+2026-08-30 15:51:49,023 - INFO - [OWS] Hydrated 71 owner settings — 59/71 enabled
+2026-08-30 15:51:49,023 - INFO - [Blacklist] Loaded 0 blacklisted keywords from SQLite
+2026-08-30 15:51:49,024 - INFO - [RulesCache] Loaded cached rules from SQLite
+2026-08-30 15:51:49,025 - INFO - [Giveaways] Loaded 0 giveaway(s) from SQLite
+2026-08-30 15:51:49,025 - INFO - [Levels] Loaded 2 user levels from SQLite
+2026-08-30 15:51:49,025 - INFO - [Import] No JSON files found to import
+2026-08-30 15:51:49,026 - INFO - [SetupHook] One-time initialization complete (DB + caches + generic views)
+2026-08-30 15:51:49,027 - INFO - [tickettool.db] Tier 1 + Tier 2 + Tier 3 schema installed (idempotent).
+2026-08-30 15:51:49,028 - INFO - [tickettool.wiring] schema installed + premium_db attached
+2026-08-30 15:51:49,028 - INFO - [ReactionRoles] global refs set
+2026-08-30 15:51:49,028 - INFO - [reactionroles.wiring] schema installed + reaction_roles_db attached
+2026-08-30 15:51:49,029 - WARNING - [Presence] Could not apply bot status: 'NoneType' object has no attribute 'change_presence'
+2026-08-30 15:51:49,538 - INFO - Shard ID None has connected to Gateway (Session ID: fcf57627cf9467a419be29a2892a3361).
+2026-08-30 15:51:51,570 - INFO - Bot started as The Lakaka Mafia (VPRP)
+2026-08-30 15:51:51,850 - INFO - [Slash Commands] Synced 0 global slash commands
+2026-08-30 15:51:51,851 - INFO - [InviteManager] Loaded 24 tracked invites from SQLite
+2026-08-30 15:51:51,851 - INFO - [TicketTool] Initialized ticket tool system
+2026-08-30 15:51:51,851 - INFO - [tickettool.wiring] on_ready hook complete
+2026-08-30 15:51:51,852 - INFO - [TicketTool] Registered views for panels
+2026-08-30 15:51:51,852 - INFO - [TicketTool] Registered views for multi-panels
+2026-08-30 15:51:52,347 - WARNING - [GetAllRoles] Could not refresh message 1541098338697609348 on startup: 403 Forbidden (error code: 50005): Cannot edit a message authored by another user
+2026-08-30 15:51:52,347 - INFO - [Blacklist] Started scheduled auto-scan task
+2026-08-30 15:51:52,347 - INFO - [Premium] (VPRP) 𝐁𝐎𝐑𝐍 𝐓𝐎 𝐊𝐈𝐋𝐋 #𝐑𝐄𝐀𝐋: RR=0/250 sticky=off msglog=on branding_footer=set
+2026-08-30 15:51:58,904 - INFO - idkanymore_039 purged all (1) messages in ✅・𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧
+2026-08-30 16:23:26,530 - INFO - [Slash Commands] Manual sync by idkanymore_039: 0 cmds global
+2026-08-30 16:23:45,382 - INFO - idkanymore_039 purged 2 messages in 📃・𝐒𝐮𝐩𝐩𝐨𝐫𝐭-𝐓𝐢𝐜𝐤𝐞𝐭𝐬
+2026-08-30 16:51:47,758 - INFO - Shard ID None has successfully RESUMED session fcf57627cf9467a419be29a2892a3361.
+2026-08-30 17:34:53,518 - INFO - Shard ID None has successfully RESUMED session fcf57627cf9467a419be29a2892a3361.
