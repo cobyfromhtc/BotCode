@@ -73,40 +73,50 @@ def register(bot):
         pid = ticket.get('panel_id')
         return tt.data_manager.load_ticket_panel(pid) if pid else None
 
-    def _parse_id(raw, *, mention_prefix: str = '<@&') -> Optional[int]:
+    def _parse_id(raw, *, strips: str = '<@&') -> Optional[int]:
         '''Parse an optional role/channel/user ID (or mention) into an int.
 
-        Raises ValueError for non-numeric input so callers can respond with a
-        clear ephemeral error instead of a traceback.
+        `strips` is the set of leading characters to trim from a mention
+        (e.g. ``<@&`` for roles, ``<#`` for channels). Raises ValueError for
+        non-numeric input so callers can respond with a clear ephemeral
+        error instead of a traceback.
         '''
         if raw is None:
             return None
-        return int(str(raw).strip().lstrip(mention_prefix).rstrip('>'))
+        return int(str(raw).strip().lstrip(strips).rstrip('>'))
 
     # =================================================================
     # NAMING (Feature 5 + 8)
     # =================================================================
-    @bot.command(name="naming", description="Configure ticket naming templates + number padding")
+    @bot.hybrid_command(
+        name="naming",
+        description="Configure ticket naming templates + number padding",
+    )
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
-        panel_id="Panel ID (use !panels to list)",
+        panel_id="Panel ID (use /panels to list)",
         open_template="Open-ticket name template, e.g. support-{ticket.count}-{ticket.user}",
         closed_template="Closed-ticket name template (optional)",
         claimed_template="Claimed-ticket name template (optional)",
         padding="Zero-pad the ticket count to this many digits (0-20, e.g. 4 -> #0057)",
     )
-    async def naming_cmd(ctx: commands.Context, panel_id: str,
-                          open_template: Optional[str] = None,
-                          closed_template: Optional[str] = None,
-                          claimed_template: Optional[str] = None,
-                          padding: Optional[int] = None) -> None:
+    async def naming_cmd(
+        ctx: commands.Context,
+        panel_id: str,
+        open_template: Optional[str] = None,
+        closed_template: Optional[str] = None,
+        claimed_template: Optional[str] = None,
+        padding: Optional[int] = None,
+    ) -> None:
+        ephemeral = ctx.interaction is not None
         pdb = _pdb()
         if pdb is None:
-            await ctx.send("Premium system not initialized.", ephemeral=True)
+            await ctx.send("Premium system not initialized.", ephemeral=ephemeral)
             return
-        panel = bot.ticket_tool.data_manager.load_ticket_panel(panel_id) if hasattr(bot, 'ticket_tool') else None
+        tt = getattr(bot, 'ticket_tool', None)
+        panel = tt.data_manager.load_ticket_panel(panel_id) if tt is not None else None
         if not panel:
-            await ctx.send(f"Panel `{panel_id}` not found.", ephemeral=True)
+            await ctx.send(f"Panel `{panel_id}` not found.", ephemeral=ephemeral)
             return
         existing = pdb.get_naming(panel_id) or {}
         cfg = {
@@ -118,7 +128,7 @@ def register(bot):
             'number_padding': int(padding) if padding is not None else int(existing.get('number_padding') or 0),
         }
         if int(cfg['number_padding']) < 0 or int(cfg['number_padding']) > 20:
-            await ctx.send("Padding must be between 0 and 20.", ephemeral=True)
+            await ctx.send("Padding must be between 0 and 20.", ephemeral=ephemeral)
             return
         pdb.upsert_naming(cfg)
         embed = discord.Embed(title="🏷️ Ticket Naming Configured", color=discord.Color.green())
@@ -127,13 +137,17 @@ def register(bot):
         embed.add_field(name="Closed template", value=f"`{cfg['closed_template'] or '(none)'}`", inline=False)
         embed.add_field(name="Claimed template", value=f"`{cfg['claimed_template'] or '(none)'}`", inline=False)
         embed.add_field(name="Number padding", value=str(cfg['number_padding']), inline=True)
-        embed.add_field(name="Variables", value="{ticket.id} {ticket.count} {ticket.user} {claim.user} {panel.name} |lower |upper |pad:4 |truncate:20", inline=False)
-        await ctx.send(embed=embed, ephemeral=True)
+        embed.add_field(
+            name="Variables",
+            value="{ticket.id} {ticket.count} {ticket.user} {claim.user} {panel.name} |lower |upper |pad:4 |truncate:20",
+            inline=False,
+        )
+        await ctx.send(embed=embed, ephemeral=ephemeral)
 
     # =================================================================
     # SCHEDULING (Feature 4)
     # =================================================================
-    @bot.command(name="schedule", description="Configure per-panel business hours")
+    @bot.hybrid_command(name="schedule", description="Configure per-panel business hours")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         panel_id="Panel ID",
@@ -191,7 +205,7 @@ def register(bot):
         embed.add_field(name="Open now?", value="✅ Yes" if open_now else "❌ No", inline=True)
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="schedview", description="View a panel's current schedule")
+    @bot.hybrid_command(name="schedview", description="View a panel's current schedule")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(panel_id="Panel ID")
     async def schedview_cmd(ctx: commands.Context, panel_id: str) -> None:
@@ -217,7 +231,7 @@ def register(bot):
     # =================================================================
     # ADVANCED CLAIMING CONFIG (Feature 2)
     # =================================================================
-    @bot.command(name="claimconfig", description="Configure advanced claiming for a panel")
+    @bot.hybrid_command(name="claimconfig", description="Configure advanced claiming for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         panel_id="Panel ID",
@@ -269,7 +283,7 @@ def register(bot):
     # =================================================================
     # ROLE AUTOMATION (Feature 3)
     # =================================================================
-    @bot.command(name="roleauto", description="Configure open/close/claim role automation")
+    @bot.hybrid_command(name="roleauto", description="Configure open/close/claim role automation")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         panel_id="Panel ID",
@@ -313,7 +327,7 @@ def register(bot):
     # =================================================================
     # AUTOMATION ENGINE (Feature 1)
     # =================================================================
-    @bot.command(name="automate", description="Create or update a ticket automation rule")
+    @bot.hybrid_command(name="automate", description="Create or update a ticket automation rule")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         panel_id="Panel ID",
@@ -359,7 +373,7 @@ def register(bot):
         embed.add_field(name="Actions", value=f"```json\n{json.dumps(act_list, indent=2)[:1000]}\n```", inline=False)
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="automatelist", description="List all automations for a panel")
+    @bot.hybrid_command(name="automatelist", description="List all automations for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(panel_id="Panel ID")
     async def automatelist_cmd(ctx: commands.Context, panel_id: str) -> None:
@@ -378,7 +392,7 @@ def register(bot):
             )
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="automatedelete", description="Delete an automation rule")
+    @bot.hybrid_command(name="automatedelete", description="Delete an automation rule")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(automation_id="Automation ID to delete")
     async def automatedelete_cmd(ctx: commands.Context, automation_id: str) -> None:
@@ -393,7 +407,7 @@ def register(bot):
     # =================================================================
     # ESCALATION (Feature 10)
     # =================================================================
-    @bot.command(name="escalate", description="Escalate the current ticket to another panel")
+    @bot.hybrid_command(name="escalate", description="Escalate the current ticket to another panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         to_panel_id="Target panel ID (optional — uses the configured route if omitted)",
@@ -418,7 +432,7 @@ def register(bot):
         else:
             await ctx.send(f"Escalation failed: {result['reason']}", ephemeral=True)
 
-    @bot.command(name="escalateroute", description="Configure an escalation route between panels")
+    @bot.hybrid_command(name="escalateroute", description="Configure an escalation route between panels")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         from_panel_id="Source panel ID",
@@ -445,7 +459,7 @@ def register(bot):
                               auto_escalate_priority=auto_escalate_priority)
         await ctx.send(f"✅ Escalation route `{from_panel_id}` → `{to_panel_id}` saved.", ephemeral=True)
 
-    @bot.command(name="escalationhistory", description="View the escalation history of the current ticket")
+    @bot.hybrid_command(name="escalationhistory", description="View the escalation history of the current ticket")
     @commands.has_permissions(manage_channels=True)
     async def escalationhistory_cmd(ctx: commands.Context) -> None:
         pdb = _pdb()
@@ -470,7 +484,7 @@ def register(bot):
     # =================================================================
     # ADVANCED TRANSCRIPT CONFIG (Feature 6)
     # =================================================================
-    @bot.command(name="transcriptconfig", description="Configure advanced transcript automation")
+    @bot.hybrid_command(name="transcriptconfig", description="Configure advanced transcript automation")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         save_mode="When to save transcripts: on_close, on_delete, both, never",
@@ -492,7 +506,7 @@ def register(bot):
         if save_mode not in tr_mod.SAVE_MODES:
             await ctx.send(f"Invalid save_mode. Use: {', '.join(tr_mod.SAVE_MODES)}", ephemeral=True); return
         try:
-            archive_id = _parse_id(auto_save_channel_id, mention_prefix='<#')
+            archive_id = _parse_id(auto_save_channel_id, strips='<#')
         except ValueError:
             await ctx.send("Invalid ID: auto_save_channel_id must be a number.", ephemeral=True); return
         # Merge over the existing config so the Tier-3 keys set by
@@ -515,7 +529,7 @@ def register(bot):
     # =================================================================
     # ADVANCED SLA (Feature 9)
     # =================================================================
-    @bot.command(name="slaconfig", description="Configure SLA targets")
+    @bot.hybrid_command(name="slaconfig", description="Configure SLA targets")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         first_response_hours="Hours allowed before first response SLA breaches (0=disabled)",
@@ -556,7 +570,7 @@ def register(bot):
             embed.add_field(name=k, value=str(v)[:200], inline=True)
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="slareport", description="View SLA performance statistics")
+    @bot.hybrid_command(name="slareport", description="View SLA performance statistics")
     @commands.has_permissions(manage_channels=True)
     async def slareport_cmd(ctx: commands.Context) -> None:
         pdb = _pdb()
@@ -575,7 +589,7 @@ def register(bot):
     # =================================================================
     # ANALYTICS + CSAT (Features 7 + 15)
     # =================================================================
-    @bot.command(name="analytics", description="View ticket analytics overview")
+    @bot.hybrid_command(name="analytics", description="View ticket analytics overview")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(days="Number of days for the trend window (default 30)")
     async def analytics_cmd(ctx: commands.Context, days: int = 30) -> None:
@@ -605,7 +619,7 @@ def register(bot):
             embed.add_field(name="Open by priority", value="\n".join(prio_lines), inline=False)
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="csat", description="View CSAT (customer satisfaction) analytics")
+    @bot.hybrid_command(name="csat", description="View CSAT (customer satisfaction) analytics")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(by="Group by: staff, panel, or time")
     async def csat_cmd(ctx: commands.Context, by: str = "staff") -> None:
@@ -633,7 +647,7 @@ def register(bot):
             embed.add_field(name="Recent feedback", value="\n".join(fb_lines), inline=False)
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="staffstats", description="View per-staff ticket performance")
+    @bot.hybrid_command(name="staffstats", description="View per-staff ticket performance")
     @commands.has_permissions(manage_channels=True)
     async def staffstats_cmd(ctx: commands.Context) -> None:
         pdb = _pdb()
@@ -656,7 +670,7 @@ def register(bot):
             )
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="export", description="Export all tickets as CSV")
+    @bot.hybrid_command(name="export", description="Export all tickets as CSV")
     @commands.has_permissions(manage_channels=True)
     async def export_cmd(ctx: commands.Context) -> None:
         pdb = _pdb()
@@ -675,7 +689,7 @@ def register(bot):
     # =================================================================
     # KNOWLEDGE BASE (Tier 2 Features #12 + #13)
     # =================================================================
-    @bot.command(name="kb", description="Knowledge base commands")
+    @bot.hybrid_command(name="kb", description="Knowledge base commands")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         action="add, view, list, search, remove, stats, or category",
@@ -751,7 +765,7 @@ def register(bot):
     # =================================================================
     # THREAD TICKETS (Tier 2 Feature #21)
     # =================================================================
-    @bot.command(name="threadtickets", description="Configure thread-based tickets for a panel")
+    @bot.hybrid_command(name="threadtickets", description="Configure thread-based tickets for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         panel_id="Panel ID",
@@ -768,7 +782,7 @@ def register(bot):
         tt = getattr(bot, 'ticket_tool', None)
         if tt is None:
             await ctx.send("Ticket system not initialized.", ephemeral=True); return
-        pid = int(parent_channel_id.lstrip('<#').rstrip('>')) if parent_channel_id else None
+        pid = _parse_id(parent_channel_id, strips='<#')
         ok = tt_mod.configure_panel_for_threads(pdb, tt.data_manager, panel_id, ctx.guild.id,
                                                   enabled=enabled, parent_channel_id=pid,
                                                   allow_user_invite=allow_user_invite)
@@ -784,7 +798,7 @@ def register(bot):
     # =================================================================
     # STAFF DISCUSSION THREADS (Tier 2 Feature #22)
     # =================================================================
-    @bot.command(name="staffthread", description="Configure private staff discussion threads for a panel")
+    @bot.hybrid_command(name="staffthread", description="Configure private staff discussion threads for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(panel_id="Panel ID", enabled="Enable staff threads (true/false)")
     async def staffthread_cmd(ctx: commands.Context, panel_id: str, enabled: bool) -> None:
@@ -802,7 +816,7 @@ def register(bot):
     # =================================================================
     # CHANNEL RECYCLING (Tier 2 Feature #24)
     # =================================================================
-    @bot.command(name="channelrecycle", description="Configure ticket channel recycling for a panel")
+    @bot.hybrid_command(name="channelrecycle", description="Configure ticket channel recycling for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(panel_id="Panel ID", enabled="Enable recycling (true/false)")
     async def channelrecycle_cmd(ctx: commands.Context, panel_id: str, enabled: bool) -> None:
@@ -825,7 +839,7 @@ def register(bot):
     # =================================================================
     # LOCALIZATION (Tier 2 Feature #28)
     # =================================================================
-    @bot.command(name="locale", description="Set the guild's language")
+    @bot.hybrid_command(name="locale", description="Set the guild's language")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         language="Language code: en, es, fr, de",
@@ -840,7 +854,7 @@ def register(bot):
             await ctx.send(f"Unsupported language. Use one of: {', '.join(i18n_mod.SUPPORTED_LANGUAGES.keys())}", ephemeral=True); return
         await ctx.send(f"🌍 Language set to **{i18n_mod.SUPPORTED_LANGUAGES[language]}**.", ephemeral=True)
 
-    @bot.command(name="localestring", description="Override a specific string")
+    @bot.hybrid_command(name="localestring", description="Override a specific string")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(string_key="String key (use /localelist to see keys)", value="Custom text")
     async def localestring_cmd(ctx: commands.Context, string_key: str, value: str) -> None:
@@ -850,7 +864,7 @@ def register(bot):
         i18n_mod.set_custom_string(pdb, ctx.guild.id, string_key, value)
         await ctx.send(f"✅ String `{string_key}` overridden.", ephemeral=True)
 
-    @bot.command(name="localelist", description="List all localizable strings")
+    @bot.hybrid_command(name="localelist", description="List all localizable strings")
     @commands.has_permissions(manage_channels=True)
     async def localelist_cmd(ctx: commands.Context) -> None:
         strings = i18n_mod.list_available_strings()
@@ -863,7 +877,7 @@ def register(bot):
     # =================================================================
     # BRANDED REPLIES (Tier 2 Feature #29)
     # =================================================================
-    @bot.command(name="brandedreplies", description="Configure anonymous/branded staff replies")
+    @bot.hybrid_command(name="brandedreplies", description="Configure anonymous/branded staff replies")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         panel_id="Panel ID",
@@ -911,7 +925,7 @@ def register(bot):
     # =================================================================
     # SUPPORT FLOWS (Tier 2 Feature #30)
     # =================================================================
-    @bot.command(name="flow", description="Create or update a support flow")
+    @bot.hybrid_command(name="flow", description="Create or update a support flow")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         name="Flow name",
@@ -937,7 +951,7 @@ def register(bot):
             await ctx.send(f"Invalid flow: {e}", ephemeral=True); return
         await ctx.send(f"📝 Flow `{fid}` saved with {len(steps)} step(s).", ephemeral=True)
 
-    @bot.command(name="flowlist", description="List all support flows")
+    @bot.hybrid_command(name="flowlist", description="List all support flows")
     @commands.has_permissions(manage_channels=True)
     async def flowlist_cmd(ctx: commands.Context) -> None:
         pdb = _pdb()
@@ -955,7 +969,7 @@ def register(bot):
             )
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="flowattach", description="Attach a flow to a panel")
+    @bot.hybrid_command(name="flowattach", description="Attach a flow to a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(panel_id="Panel ID", flow_id="Flow ID (or empty to detach)")
     async def flowattach_cmd(ctx: commands.Context, panel_id: str,
@@ -971,7 +985,7 @@ def register(bot):
             await ctx.send(f"Panel `{panel_id}` not found.", ephemeral=True); return
         await ctx.send(f"📝 Flow {'attached' if flow_id else 'detached'} for panel `{panel_id}`.", ephemeral=True)
 
-    @bot.command(name="flowdelete", description="Delete a support flow")
+    @bot.hybrid_command(name="flowdelete", description="Delete a support flow")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(flow_id="Flow ID")
     async def flowdelete_cmd(ctx: commands.Context, flow_id: str) -> None:
@@ -986,7 +1000,7 @@ def register(bot):
     # =================================================================
     # CUSTOM COMMANDS (Tier 2 Feature #36)
     # =================================================================
-    @bot.command(name="customcommand", description="Create or update a custom command")
+    @bot.hybrid_command(name="customcommand", description="Create or update a custom command")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         name="Command name (lowercase, no spaces)",
@@ -1022,7 +1036,7 @@ def register(bot):
             await ctx.send(f"Invalid command: {e}", ephemeral=True); return
         await ctx.send(f"⚙️ Custom command `!{name.lower()}` saved ({cid}).", ephemeral=True)
 
-    @bot.command(name="customcommandlist", description="List all custom commands")
+    @bot.hybrid_command(name="customcommandlist", description="List all custom commands")
     @commands.has_permissions(manage_channels=True)
     async def customcommandlist_cmd(ctx: commands.Context) -> None:
         pdb = _pdb()
@@ -1040,7 +1054,7 @@ def register(bot):
             )
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="customcommandremove", description="Remove a custom command")
+    @bot.hybrid_command(name="customcommandremove", description="Remove a custom command")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(name="Command name")
     async def customcommandremove_cmd(ctx: commands.Context, name: str) -> None:
@@ -1056,7 +1070,7 @@ def register(bot):
     # =================================================================
     # ADVANCED STAFF ANALYTICS (Tier 2 Feature #25)
     # =================================================================
-    @bot.command(name="staffanalytics", description="Advanced per-staff analytics")
+    @bot.hybrid_command(name="staffanalytics", description="Advanced per-staff analytics")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(days="Look back this many days (default 30)")
     async def staffanalytics_cmd(ctx: commands.Context, days: int = 30) -> None:
@@ -1086,7 +1100,7 @@ def register(bot):
             )
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="ticktrends", description="Long-term ticket trend report")
+    @bot.hybrid_command(name="ticktrends", description="Long-term ticket trend report")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(days="Look back this many days (default 90)")
     async def ticktrends_cmd(ctx: commands.Context, days: int = 90) -> None:
@@ -1104,7 +1118,7 @@ def register(bot):
             embed.add_field(name="Busiest day", value=f"{b['date']} ({b['created']} tickets)", inline=False)
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="responsedistribution", description="First-response time distribution")
+    @bot.hybrid_command(name="responsedistribution", description="First-response time distribution")
     @commands.has_permissions(manage_channels=True)
     async def responsedistribution_cmd(ctx: commands.Context) -> None:
         pdb = _pdb()
@@ -1122,7 +1136,7 @@ def register(bot):
     # =================================================================
     # MULTI-EMBED PANEL MESSAGES (Tier 3 Feature #10)
     # =================================================================
-    @bot.command(name="panelembed", description="Add or update a multi-embed for a panel")
+    @bot.hybrid_command(name="panelembed", description="Add or update a multi-embed for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         panel_id="Panel ID",
@@ -1151,7 +1165,7 @@ def register(bot):
         except ValueError as e:
             await ctx.send(str(e), ephemeral=True)
 
-    @bot.command(name="panelembedlist", description="List all multi-embeds for a panel")
+    @bot.hybrid_command(name="panelembedlist", description="List all multi-embeds for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(panel_id="Panel ID")
     async def panelembedlist_cmd(ctx: commands.Context, panel_id: str) -> None:
@@ -1173,7 +1187,7 @@ def register(bot):
             )
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="panelembedremove", description="Remove a multi-embed from a panel")
+    @bot.hybrid_command(name="panelembedremove", description="Remove a multi-embed from a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(embed_id="Embed ID to remove")
     async def panelembedremove_cmd(ctx: commands.Context, embed_id: str) -> None:
@@ -1185,7 +1199,7 @@ def register(bot):
         else:
             await ctx.send("Embed not found.", ephemeral=True)
 
-    @bot.command(name="panelembedenable", description="Enable/disable multi-embed mode for a panel")
+    @bot.hybrid_command(name="panelembedenable", description="Enable/disable multi-embed mode for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(panel_id="Panel ID", enabled="Enable multi-embed (true/false)")
     async def panelembedenable_cmd(ctx: commands.Context, panel_id: str, enabled: bool) -> None:
@@ -1203,7 +1217,7 @@ def register(bot):
     # =================================================================
     # ADVANCED MODERATOR MESSAGES (Tier 3 Feature #9)
     # =================================================================
-    @bot.command(name="modmessage", description="Configure a moderator message for a ticket event")
+    @bot.hybrid_command(name="modmessage", description="Configure a moderator message for a ticket event")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         panel_id="Panel ID",
@@ -1248,7 +1262,7 @@ def register(bot):
         embed.add_field(name="Enabled", value="✅" if enabled else "❌", inline=True)
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="modmessagelist", description="List all moderator messages for a panel")
+    @bot.hybrid_command(name="modmessagelist", description="List all moderator messages for a panel")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(panel_id="Panel ID")
     async def modmessagelist_cmd(ctx: commands.Context, panel_id: str) -> None:
@@ -1267,7 +1281,7 @@ def register(bot):
             )
         await ctx.send(embed=embed, ephemeral=True)
 
-    @bot.command(name="modmessageremove", description="Remove a moderator message")
+    @bot.hybrid_command(name="modmessageremove", description="Remove a moderator message")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(message_id="Moderator message ID to remove")
     async def modmessageremove_cmd(ctx: commands.Context, message_id: str) -> None:
@@ -1282,7 +1296,7 @@ def register(bot):
     # =================================================================
     # FLOW REVIEW / APPROVAL (Tier 3 Feature #32)
     # =================================================================
-    @bot.command(name="flowapplication", description="Mark a flow as an application (routes to review queue)")
+    @bot.hybrid_command(name="flowapplication", description="Mark a flow as an application (routes to review queue)")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(flow_id="Flow ID", is_application="True for application flow, false for normal")
     async def flowapplication_cmd(ctx: commands.Context, flow_id: str, is_application: bool) -> None:
@@ -1297,7 +1311,7 @@ def register(bot):
             await ctx.send(f"Flow `{flow_id}` not found.", ephemeral=True); return
         await ctx.send(f"📝 Flow `{flow_id}` marked as {'application' if is_application else 'normal'}.", ephemeral=True)
 
-    @bot.command(name="flowreviewconfig", description="Configure review settings for an application flow")
+    @bot.hybrid_command(name="flowreviewconfig", description="Configure review settings for an application flow")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         flow_id="Flow ID",
@@ -1319,7 +1333,7 @@ def register(bot):
         if pdb is None:
             await ctx.send("Premium not initialized.", ephemeral=True); return
         try:
-            rch = _parse_id(review_channel_id, mention_prefix='<#')
+            rch = _parse_id(review_channel_id, strips='<#')
         except ValueError:
             await ctx.send("Invalid ID: review_channel_id must be a number.", ephemeral=True); return
         if rch is None:
@@ -1336,7 +1350,7 @@ def register(bot):
                              rejected_panel_id=rejected_panel_id)
         await ctx.send(f"📝 Review config saved for flow `{flow_id}`.", ephemeral=True)
 
-    @bot.command(name="reviewpending", description="List pending application reviews")
+    @bot.hybrid_command(name="reviewpending", description="List pending application reviews")
     @commands.has_permissions(manage_channels=True)
     async def reviewpending_cmd(ctx: commands.Context) -> None:
         pdb = _pdb()
@@ -1345,7 +1359,7 @@ def register(bot):
         reviews = fr_mod.list_pending(pdb, ctx.guild.id)
         await ctx.send(embed=fr_mod.build_pending_embed(reviews), ephemeral=True)
 
-    @bot.command(name="reviewdecision", description="Approve or reject a pending review")
+    @bot.hybrid_command(name="reviewdecision", description="Approve or reject a pending review")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(review_id="Review ID", decision="approve or reject", notes="Optional notes")
     async def reviewdecision_cmd(ctx: commands.Context, review_id: str, decision: str,
@@ -1386,7 +1400,7 @@ def register(bot):
     # =================================================================
     # EXTENDED TRANSCRIPT CONFIG (Tier 3 Feature #11)
     # =================================================================
-    @bot.command(name="transcriptconfig2", description="Extended transcript config (Tier 3)")
+    @bot.hybrid_command(name="transcriptconfig2", description="Extended transcript config (Tier 3)")
     @commands.has_permissions(manage_channels=True)
     @app_commands.describe(
         disable_html_attachment="Don't attach HTML file (store in DB only) (true/false)",
@@ -1415,9 +1429,9 @@ def register(bot):
         await ctx.send(embed=embed, ephemeral=True)
 
     # =================================================================
-    # CANNED REPLIES (Ticket Tool !canned) — prefix-only command group
+    # CANNED REPLIES (Ticket Tool !canned) — hybrid command group
     # =================================================================
-    @bot.group(name="canned", description="Canned replies: saved response snippets for tickets")
+    @bot.hybrid_group(name="canned", description="Canned replies: saved response snippets for tickets", invoke_without_command=True)
     async def canned_group(ctx: commands.Context) -> None:
         pdb = _pdb()
         if pdb is None:

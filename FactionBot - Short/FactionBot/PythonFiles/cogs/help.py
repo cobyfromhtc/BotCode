@@ -21,6 +21,7 @@ import difflib
 import logging
 import math
 import re
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import discord
@@ -318,8 +319,21 @@ class HelpView(discord.ui.View):
 class HelpCog(commands.Cog, name="FactionHelp"):
     """Dynamic ``!help`` — category browser + command detail pages."""
 
+    #: how long a categorized snapshot stays fresh before we rebuild it
+    CACHE_TTL_SECONDS = 300
+
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._categorized_cache: Optional[Dict[str, List[commands.Command]]] = None
+        self._categorized_cache_ts: float = 0.0
+        # Invalidate the cache whenever a cog is added or removed so a
+        # hot-reloaded command set is never served from a stale snapshot.
+        bot.add_listener(self._on_cog_change, "on_cog_add")
+        bot.add_listener(self._on_cog_change, "on_cog_remove")
+
+    async def _on_cog_change(self, _cog) -> None:
+        self._categorized_cache = None
+        self._categorized_cache_ts = 0.0
 
     # ------------------------------------------------------------------
     # Prefix
@@ -362,7 +376,21 @@ class HelpCog(commands.Cog, name="FactionHelp"):
         return CATEGORY_UTILITY
 
     def categorized(self) -> Dict[str, List[commands.Command]]:
-        """category → sorted command list, computed from the live command set."""
+        """category → sorted command list, computed from the live command set.
+
+        Cached for ``CACHE_TTL_SECONDS`` seconds. The help menu rebuilds
+        the select options on every interaction; on a 200-command bot that
+        walked every command each time. The TTL cache keeps the menu
+        instant while still picking up newly-loaded cogs within 5 minutes
+        (or immediately, on the add/remove listener).
+        """
+        now = time.time()
+        if (
+            self._categorized_cache is not None
+            and (now - self._categorized_cache_ts) < self.CACHE_TTL_SECONDS
+        ):
+            return self._categorized_cache
+
         cats: Dict[str, List[commands.Command]] = {name: [] for name in ALL_CATEGORIES}
         for command in self.bot.commands:
             try:
@@ -372,6 +400,9 @@ class HelpCog(commands.Cog, name="FactionHelp"):
                 cats.setdefault(CATEGORY_UTILITY, []).append(command)
         for commands_list in cats.values():
             commands_list.sort(key=lambda c: (getattr(c, "name", "") or "").lower())
+
+        self._categorized_cache = cats
+        self._categorized_cache_ts = now
         return cats
 
     # ------------------------------------------------------------------

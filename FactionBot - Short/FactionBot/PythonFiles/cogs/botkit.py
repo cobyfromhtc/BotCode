@@ -25,8 +25,12 @@ import discord
 # ---------------------------------------------------------------------------
 # Paths & DB
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # cogs/ -> PythonFiles/ -> FactionBot/
-DB_PATH = PROJECT_ROOT / "data" / "bot_data.db"
+# Anchor every path to this file's real location so the cogs and the core
+# bot agree on ONE database file regardless of the launch CWD. Previously
+# `Bot.py` used a *relative* "data/bot_data.db"; if the process was started
+# from a different directory, the two paths pointed at two different files.
+PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
+DB_PATH: Path = PROJECT_ROOT / "data" / "bot_data.db"
 
 _brand_footer: Optional[str] = None  # cached footer text (set by core at load)
 
@@ -239,7 +243,3 @@ def parse_duration(text: str) -> Optional[int]:
     n, unit = int(m.group(1)), m.group(2) or "s"
     mult = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
     return n * mult
-
-
-def duration_str(seconds: int) -> str:
-    return fmt_duration(seconds)

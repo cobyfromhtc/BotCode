@@ -29,6 +29,7 @@ from cogs.botkit import (
     error,
     fetchall,
     fetchone,
+    get_conn,
     fmt_dt,
     fmt_duration,
     info,
@@ -302,22 +303,49 @@ class PollsCog(commands.Cog, name="Polls"):
 
     # -- finalize pipeline -----------------------------------------------------------
     async def _finalize_poll(
-        self, row: Dict[str, Any], *, announce: bool, ended_by: Optional[discord.Member] = None
+        self, row: Dict[str, Any], *, announce: bool,
+        ended_by: Optional[discord.Member] = None,
     ) -> Dict[str, Any]:
-        """End a poll, store its results, and announce them.
+        """End a poll, store its results, and (optionally) announce them.
 
-        Returns ``{"outcome": "ended"|"missing"|"failed", ...}``:
-        * ``ended``   — poll finished, results stored (+ announced if asked)
-        * ``missing`` — message/channel is gone; poll marked ended
-        * ``failed``  — couldn't touch the message; poll left active for retry
+        Returns ``{"outcome": "ended"|"missing"|"failed"|"lost-race", ...}``.
+
+        Concurrency: the poll's status is conditionally flipped from 'active'
+        to 'ending' with a single UPDATE. If a concurrent `/poll cancel` or
+        another sweep tick already claimed it, `rowcount` is 0 and we bail
+        out — preventing double `poll.end()` calls (which Discord rejects
+        with a 400) and duplicate results posts.
         """
+        poll_id = int(row["id"])
+
+        # Conditional claim — only one caller wins this row.
+        try:
+            conn = get_conn()
+            try:
+                cursor = conn.execute(
+                    "UPDATE polls SET status = 'ending' "
+                    "WHERE id = ? AND status = 'active'",
+                    (poll_id,),
+                )
+                conn.commit()
+                won = cursor.rowcount > 0
+            finally:
+                conn.close()
+        except Exception as exc:
+            log.warning("[Polls] conditional end-claim failed for %s: %s", poll_id, exc)
+            return {"outcome": "failed", "results": [], "total": 0}
+
+        if not won:
+            return {"outcome": "lost-race", "results": [], "total": 0}
+
         channel_id = int(row.get("channel_id") or 0)
         message_id = int(row.get("message_id") or 0)
         channel = self.bot.get_channel(channel_id) if channel_id else None
         if channel is None and channel_id:
             try:
                 channel = await self.bot.fetch_channel(channel_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException, discord.ClientException):
+            except (discord.NotFound, discord.Forbidden,
+                    discord.HTTPException, discord.ClientException):
                 channel = None
         if channel is None or not hasattr(channel, "fetch_message"):
             self._mark_ended(row)
@@ -331,18 +359,19 @@ class PollsCog(commands.Cog, name="Polls"):
             self._store_results(row, [], 0)
             return {"outcome": "missing", "results": [], "total": 0}
         except (discord.Forbidden, discord.HTTPException) as exc:
-            log.warning("[Polls] can't fetch message for poll %s: %s", row["id"], exc)
+            log.warning("[Polls] can't fetch message for poll %s: %s", poll_id, exc)
+            self._mark_ended(row)
             return {"outcome": "failed", "results": [], "total": 0}
 
         poll = getattr(message, "poll", None)
         if poll is not None and not self._poll_finalized(poll):
             try:
                 await poll.end()
-            except (discord.ClientException, discord.Forbidden, discord.HTTPException) as exc:
-                # Already ended naturally, or no permission — extract anyway.
-                log.info("[Polls] end() on poll %s: %s (continuing)", row["id"], exc)
+            except (discord.ClientException, discord.Forbidden,
+                    discord.HTTPException) as exc:
+                log.info("[Polls] end() on poll %s: %s (continuing)", poll_id, exc)
 
-        # Give the API a beat to publish final counts, then refetch.
+        # Give the API a moment to publish final counts, then refetch.
         await asyncio.sleep(2)
         try:
             message = await channel.fetch_message(message_id)
@@ -351,7 +380,7 @@ class PollsCog(commands.Cog, name="Polls"):
             self._store_results(row, [], 0)
             return {"outcome": "missing", "results": [], "total": 0}
         except (discord.Forbidden, discord.HTTPException) as exc:
-            log.warning("[Polls] can't refetch message for poll %s: %s", row["id"], exc)
+            log.warning("[Polls] can't refetch message for poll %s: %s", poll_id, exc)
 
         results = await self._extract_results(message)
         total = sum(votes for _, votes in results)
@@ -360,26 +389,49 @@ class PollsCog(commands.Cog, name="Polls"):
 
         if announce:
             try:
-                await channel.send(embed=self._results_embed(row, results, total, ended_by=ended_by))
+                await channel.send(
+                    embed=self._results_embed(row, results, total, ended_by=ended_by)
+                )
             except (discord.Forbidden, discord.HTTPException) as exc:
-                log.warning("[Polls] couldn't announce results for poll %s: %s", row["id"], exc)
+                log.warning(
+                    "[Polls] couldn't announce results for poll %s: %s", poll_id, exc
+                )
         return {"outcome": "ended", "results": results, "total": total}
 
     # -- background sweep --------------------------------------------------------------
     @tasks.loop(seconds=60)
     async def check_due(self) -> None:
+        """Sweep every minute for polls whose end time has passed.
+
+        Due polls are finalised in parallel (capped at 5 at once) because
+        each `_finalize_poll` needs ~2s of API wait time — serialising 20
+        due polls would stall the sweep for 40+ seconds.
+        """
         rows = self._db_fetchall("SELECT * FROM polls WHERE status = 'active'")
         if not rows:
             return
+
         now = discord.utils.utcnow()
+        due_rows: List[Dict[str, Any]] = []
         for row in rows:
             ends_at = parse_iso(row["ends_at"]) if "ends_at" in row.keys() else None
             if ends_at is None or ends_at > now:
                 continue
-            try:
-                await self._finalize_poll(dict(row), announce=True)
-            except Exception:
-                log.exception("[Polls] failed to finalize poll %s", row["id"])
+            due_rows.append(dict(row))
+
+        if not due_rows:
+            return
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def _run(row: Dict[str, Any]) -> None:
+            async with semaphore:
+                try:
+                    await self._finalize_poll(row, announce=True)
+                except Exception:
+                    log.exception("[Polls] failed to finalize poll %s", row.get("id"))
+
+        await asyncio.gather(*(_run(r) for r in due_rows))
 
     @check_due.before_loop
     async def before_check_due(self) -> None:

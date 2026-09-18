@@ -612,8 +612,14 @@ class VerificationCog(commands.Cog, name="Verification"):
         if unverified_role is None:
             return
         timeout_minutes = int(row["timeout_minutes"] or 0)
+        if timeout_minutes <= 0:
+            return
         kick_on_timeout = bool(int(row["kick_on_timeout"] or 0))
-        for member in list(unverified_role.members):
+        # Take a snapshot of the member set. `role.members` is a live view
+        # that mutates as we kick people; iterating it directly can raise
+        # "set changed size during iteration" on busy guilds.
+        members_snapshot = list(unverified_role.members)
+        for member in members_snapshot:
             if member.bot or is_exempt(member):
                 continue
             joined = member.joined_at

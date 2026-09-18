@@ -25,6 +25,7 @@ from discord import app_commands
 import time
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Set, Dict, Tuple, List, Any, Callable
+from collections import OrderedDict
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
@@ -112,6 +113,29 @@ except ImportError:
     SQLITE_AVAILABLE = False
 
 # Roblox in-game verification support removed; server-only verification flow is used.
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INTERNAL STUB TYPES
+# ═══════════════════════════════════════════════════════════════════════════
+class _BulkDeleteStub:
+    """Lightweight message-shaped object used by the bulk-delete logger.
+
+    `MessageLogSystem.log_bulk_delete` expects objects exposing `.id`,
+    `.content`, `.author`, and `.attachments`. When we only have a cached
+    snapshot (no live `discord.Message`), we build one of these so the
+    logger can render the entry without an extra API fetch.
+    """
+    __slots__ = ("id", "content", "author", "attachments")
+
+    def __init__(self, *, message_id: int, content: str, author, attachments):
+        self.id = message_id
+        self.content = content
+        self.author = author
+        self.attachments = attachments or []
+
+    def __repr__(self) -> str:
+        return f"<_BulkDeleteStub id={self.id} author={self.author}>"
 
 
 # --- ENUMERATIONS ---
@@ -327,6 +351,29 @@ class Config:
             data_manager.set_config_value("timing", payload)
         except Exception as exc:
             logging.warning(f"[Timing] Could not save timing config: {exc}")
+
+    def apply_timing_to_loops(self) -> None:
+        """Re-apply the current `timing` values to the live task loops.
+
+        `@tasks.loop(minutes=X)` captures X at decoration time, so changing
+        the value in `config.timing` had no effect until restart. This method
+        rebuilds the loops' intervals in-place. Safe to call from sync or
+        async context — the underlying `change_interval` is a sync method.
+        """
+        try:
+            # `send_report_message` and `auto_blacklist_scan` are defined at
+            # module level below this class; we look them up by name so this
+            # method can run safely even during early startup.
+            global _TIMING_APPLIERS
+            for applier in _TIMING_APPLIERS:
+                try:
+                    applier()
+                except Exception as exc:
+                    logging.warning(f"[Timing] apply callback failed: {exc}")
+        except NameError:
+            # The registry doesn't exist yet (very early startup). Loops will
+            # pick up the current values when they first start.
+            pass
 
     # ------------------------------------------------------------------
     # LIMITS CONFIG persistence (!limitssetup).
@@ -1369,15 +1416,12 @@ class DataManager:
             return cursor.rowcount > 0
 
     async def async_load_ticket_categories(self, guild_id: int) -> List[Dict]:
-        import asyncio
         return await asyncio.to_thread(self.load_ticket_categories, guild_id)
 
     async def async_load_ticket_category(self, category_id: str) -> Optional[Dict]:
-        import asyncio
         return await asyncio.to_thread(self.load_ticket_category, category_id)
 
     async def async_set_ticket_category(self, ticket_id: str, category_id: Optional[str]) -> bool:
-        import asyncio
         return await asyncio.to_thread(self.set_ticket_category, ticket_id, category_id)
 
     # === TICKETS ===
@@ -1626,39 +1670,30 @@ class DataManager:
     # threading.Lock keeps concurrent access safe.
     # ------------------------------------------------------------------
     async def async_save_ticket(self, ticket: Dict) -> None:
-        import asyncio
         await asyncio.to_thread(self.save_ticket, ticket)
 
     async def async_load_ticket(self, ticket_id: str) -> Optional[Dict]:
-        import asyncio
         return await asyncio.to_thread(self.load_ticket, ticket_id)
 
     async def async_load_ticket_by_channel(self, channel_id: int) -> Optional[Dict]:
-        import asyncio
         return await asyncio.to_thread(self.load_ticket_by_channel, channel_id)
 
     async def async_load_tickets_by_creator(self, creator_id: int, guild_id: int = None) -> List[Dict]:
-        import asyncio
         return await asyncio.to_thread(self.load_tickets_by_creator, creator_id, guild_id)
 
     async def async_save_ticket_answer(self, answer: Dict) -> None:
-        import asyncio
         await asyncio.to_thread(self.save_ticket_answer, answer)
 
     async def async_save_ticket_note(self, note: Dict) -> None:
-        import asyncio
         await asyncio.to_thread(self.save_ticket_note, note)
 
     async def async_save_transcript(self, transcript: Dict) -> None:
-        import asyncio
         await asyncio.to_thread(self.save_transcript, transcript)
 
     async def async_save_ticket_message(self, message: Dict) -> None:
-        import asyncio
         await asyncio.to_thread(self.save_ticket_message, message)
 
     async def async_load_ticket_messages(self, ticket_id: str) -> List[Dict]:
-        import asyncio
         return await asyncio.to_thread(self.load_ticket_messages, ticket_id)
 
     def atomic_claim_ticket(self, ticket_id: str, user_id: int) -> Tuple[bool, str]:
@@ -2230,6 +2265,43 @@ class DataManager:
         cursor.execute('SELECT * FROM ticket_blacklist')
         return [dict(row) for row in cursor.fetchall()]
 
+    def count_orphan_rows(self, table: str, fk_col: str, valid_ids: set) -> int:
+        """Count rows in `table` whose `fk_col` is NOT in `valid_ids`.
+
+        Used by `!dbcleanup` for the pre-delete preview. Uses the shared
+        connection + lock so it can't race with the purge that follows.
+        `table` and `fk_col` are hardcoded by callers (never user-supplied).
+        """
+        with self._lock:
+            cursor = self._connection.cursor()
+            if not valid_ids:
+                cursor.execute(f'SELECT COUNT(*) FROM {table}')
+            else:
+                placeholders = ','.join('?' * len(valid_ids))
+                cursor.execute(
+                    f'SELECT COUNT(*) FROM {table} WHERE {fk_col} NOT IN ({placeholders})',
+                    list(valid_ids),
+                )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    def count_inactive_warnings(self) -> int:
+        """Count warnings whose `is_active` flag is 0 (candidates for purge)."""
+        cursor = self._connection.cursor()
+        cursor.execute('SELECT COUNT(*) FROM warnings WHERE is_active = 0')
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    def count_invite_history(self, guild_id: int) -> int:
+        """Count archived invite-batch rows for a guild."""
+        cursor = self._connection.cursor()
+        cursor.execute(
+            'SELECT COUNT(*) FROM invite_history WHERE guild_id = ?',
+            (guild_id,),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+
     # =========================================================================
     # STICKY ROLES (Dyno premium — re-apply on rejoin)
     # =========================================================================
@@ -2543,6 +2615,11 @@ class DataManager:
     # GIVEAWAYS
 # --- GLOBAL INSTANCE ---
 config = Config()
+# Ensure the data directories exist BEFORE DataManager.connect() opens the
+# SQLite file. Previously this was never called, so a fresh checkout (with
+# no `data/` directory present) crashed on the first sqlite3.connect() with
+# "unable to open database file".
+config.ensure_directories()
 data_manager = DataManager(config.db_file)
 
 
@@ -2627,6 +2704,7 @@ class TicketBot(commands.Bot):
         # in-memory caches. These must run before on_ready so the caches
         # are populated before the first guild event arrives.
         load_blacklist_data()
+        load_warnings_data()
 
         # Warm the no-purge exclusion cache so !nopurge-protected messages
         # are respected by the auto-purge system and !purge/!purgeall from
@@ -2700,6 +2778,40 @@ class TicketBot(commands.Bot):
                 ReactionRoles.wiring.on_setup_hook(data_manager, self)
             except Exception as exc:
                 logging.exception(f"[SetupHook] ReactionRoles.on_setup_hook failed: {exc}")
+
+        # --- TICKET TOOL SYSTEM (moved from on_ready) ---
+        # Previously created in on_ready. That meant any gateway event
+        # arriving before on_ready finished (or after a setup_hook failure)
+        # saw `ticket_tool = None` and short-circuited. `TicketToolSystem`
+        # only needs a live DB connection and the bot instance — both are
+        # available here — so we build it in setup_hook.
+        global ticket_tool
+        ticket_tool = TicketToolSystem(data_manager, self)
+        self.ticket_tool = ticket_tool
+        logging.info("[SetupHook] TicketToolSystem initialized")
+
+        # Register persistent views that can only exist once ticket_tool
+        # is available. (The `TicketPanelView` / `TicketPanelSelectView`
+        # registrations for stored panels still happen in on_ready because
+        # they need `bot.guilds` to be fully cached.)
+        self.add_view(TicketModeratorView())
+
+        # Warm the reaction-panel cache now that the DB is live.
+        for guild in self.guilds:
+            try:
+                for row in data_manager.load_reaction_panels_by_guild(guild.id):
+                    try:
+                        mapping = json.loads(row.get('mapping') or '{}')
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(mapping, dict) and mapping:
+                        _cache_reaction_panel(row['message_id'], mapping)
+            except Exception as exc:
+                logging.warning(f"[SetupHook] reaction-panel cache warm failed: {exc}")
+
+        # Quick sanity log so operators can confirm ticket commands are
+        # usable from the very first message the bot receives.
+        logging.info("[SetupHook] Ticket subsystem ready (commands usable pre-ready)")
 
 
 # ---------------------------------------------------------------------------
@@ -3107,7 +3219,72 @@ def _is_lead_instance() -> bool:
 
 print("[Startup] Creating bot instance...")
 bot = TicketBot(command_prefix=config.command_prefix, intents=intents)
+# Disable discord.py's built-in !help command at import time (not just in
+# setup_hook) so cogs.help can register its own !help hybrid command without
+# a CommandRegistrationError. setup_hook repeats this for safety, but having
+# it here means the built-in is gone before ANY cog loads.
+bot.help_command = None
 print(f"[Startup] Bot instance created. Commands so far: {len(bot.commands)}")
+
+# ---------------------------------------------------------------------------
+# RESILIENT COMMAND REGISTRATION — never crash on Discord's 100-slash limit.
+#
+# `@bot.hybrid_command(...)` internally calls `bot.add_command(cmd)` which
+# calls `bot.tree.add_command(cmd.app_command)`. If the global slash-command
+# count hits 100, that raises `CommandLimitReached` and the bot crashes at
+# import time — before it ever connects.
+#
+# This wrapper catches that exception. discord.py registers the PREFIX command
+# BEFORE attempting the slash registration, so when the slash part fails the
+# prefix command is already in `bot._commands` and works fine via `!command`.
+# The command simply loses its `/slash` variant — a graceful degradation, not
+# a crash.
+#
+# With HOME_GUILD_IDS set: premium commands are guild-scoped (separate bucket),
+#   so the global count stays under 100 and ALL commands get slash support.
+# Without HOME_GUILD_IDS: the first ~100 commands get slash, the rest are
+#   prefix-only. The bot ALWAYS starts either way.
+# ---------------------------------------------------------------------------
+_real_add_command = bot.add_command
+_slash_limit_hit = False
+
+def _resilient_add_command(command):
+    global _slash_limit_hit
+    try:
+        _real_add_command(command)
+    except app_commands.errors.CommandLimitReached:
+        name = getattr(command, 'name', 'unknown')
+        if not _slash_limit_hit:
+            _slash_limit_hit = True
+            logging.warning(
+                f"[Commands] Discord's 100 global slash-command limit reached. "
+                f"'/{name}' and subsequent commands will be PREFIX-ONLY (no /slash). "
+                f"Set HOME_GUILD_IDS in .env to scope premium commands to your "
+                f"guild and enable slash for ALL commands."
+            )
+        else:
+            logging.debug(f"[Commands] '{name}' → prefix-only (slash limit reached)")
+        # Defensive: ensure the prefix command is registered. discord.py's
+        # GroupMixin.add_command (called via super() before tree.add_command)
+        # registers prefix in bot.all_commands BEFORE the slash attempt, so it
+        # should already be present — but verify just in case the library
+        # reorders in a future version.
+        if hasattr(command, 'name') and command.name not in bot.all_commands:
+            bot.all_commands[command.name] = command
+
+bot.add_command = _resilient_add_command
+
+# ---------------------------------------------------------------------------
+# GUILD-SCOPE PREMIUM COMMANDS — keep the global slash-command count under
+# Discord's 100-command limit.
+#
+# TicketTool (50) + ReactionRoles (6) slash commands are scoped to the
+# configured home guild(s) so they live in a separate per-guild 100-command
+# bucket. Bot.py's own commands (82) + cogs (12) register globally (94 < 100).
+# When HOME_GUILD_IDS is not set the scoping is a no-op; the resilient wrapper
+# above ensures the bot still starts (overflow commands become prefix-only).
+# ---------------------------------------------------------------------------
+_restore_premium_scoping = _install_guild_scoped_hybrid_decorators(bot, _HOME_GUILD_IDS)
 
 # Register TicketTool prefix commands on the bot instance.
 if PREMIUM_AVAILABLE:
@@ -3131,6 +3308,28 @@ if RR_AVAILABLE:
     except Exception as exc:
         logging.exception(f"[ReactionRoles] command registration failed: {exc}")
         print(f"[Startup] WARNING: ReactionRoles registration FAILED: {exc}")
+
+# Restore the unscoped hybrid_command/hybrid_group so Bot.py's own decorators
+# (below) register GLOBALLY — they're the core moderation/utility commands
+# every server needs, and 82 + 12 (cogs) = 94 < 100.
+_restore_premium_scoping()
+
+# Warn if HOME_GUILD_IDS is not set — the bot won't crash (the resilient
+# wrapper above catches CommandLimitReached), but commands beyond the 100th
+# global slash slot will be PREFIX-ONLY. Setting HOME_GUILD_IDS scopes the
+# 56 premium commands to your guild(s), freeing global slots so ALL 133
+# commands get full slash support.
+if not _HOME_GUILD_IDS:
+    logging.warning(
+        "[Startup] HOME_GUILD_IDS is not set. The bot will start, but once "
+        "the global slash-command count hits 100, remaining commands become "
+        "prefix-only (no /slash). Set HOME_GUILD_IDS=your,guild,ids in .env "
+        "or tokens.txt to scope premium commands to your server(s) and "
+        "enable slash for ALL 133 commands."
+    )
+    print("ℹ️  HOME_GUILD_IDS not set — some commands will be prefix-only. "
+          "Set HOME_GUILD_IDS in .env for full slash support. See bot log.")
+
 # Once-flag: ensure slash commands are synced only once per process.
 _slash_synced: bool = False
 
@@ -3182,6 +3381,57 @@ class ProcessManager:
 
 process_manager = ProcessManager()
 
+# ═══════════════════════════════════════════════════════════════════════════
+# LIVE TIMING-LOOP APPLIERS
+# ═══════════════════════════════════════════════════════════════════════════
+# Each callable in this list re-reads config.timing and updates the matching
+# task loop's interval. Populated right after the loops are defined, and
+# invoked by Config.apply_timing_to_loops() whenever `!timingsetup` writes
+# a new value. Using a list keeps this decoupled from the loop definitions
+# themselves (they appear later in the file).
+_TIMING_APPLIERS: List[Callable[[], None]] = []
+
+
+def _register_timing_appliers() -> None:
+    """Populate `_TIMING_APPLIERS` once the task loops are defined.
+
+    Called at module bottom, immediately after both loops exist. Idempotent
+    — safe to call more than once.
+    """
+    _TIMING_APPLIERS.clear()
+
+    def _apply_report_interval() -> None:
+        new_minutes = max(1, int(config.timing.report_message_interval_minutes))
+        try:
+            send_report_message.change_interval(minutes=new_minutes)
+        except Exception as exc:
+            logging.warning(f"[Timing] could not update broadcast interval: {exc}")
+            return
+        if messages_enabled and not send_report_message.is_running():
+            try:
+                send_report_message.start()
+            except RuntimeError:
+                pass  # already running from a race — harmless
+        logging.info(f"[Timing] Broadcast interval set to {new_minutes} minute(s)")
+
+    def _apply_auto_scan_interval() -> None:
+        new_hours = max(1, int(config.timing.auto_scan_interval_hours))
+        try:
+            auto_blacklist_scan.change_interval(hours=new_hours)
+        except Exception as exc:
+            logging.warning(f"[Timing] could not update auto-scan interval: {exc}")
+            return
+        if blacklisted_keywords and not auto_blacklist_scan.is_running():
+            try:
+                auto_blacklist_scan.start()
+            except RuntimeError:
+                pass
+        logging.info(f"[Timing] Auto-scan interval set to {new_hours} hour(s)")
+
+    _TIMING_APPLIERS.append(_apply_report_interval)
+    _TIMING_APPLIERS.append(_apply_auto_scan_interval)
+
+
 WELCOME_TEMPLATES: List[str] = [
     "Welcome {mention} to {server}. We expect you to put in work.",
     "What's good, {mention}? Brought any Pizza? No? Whatever. Welcome to {server}, we expect you to work hard.",
@@ -3189,6 +3439,33 @@ WELCOME_TEMPLATES: List[str] = [
     "Is that who I think it is? {mention}, welcome to {server}. We expect you to put in work.",
     "Ay {mention}, we gotta Recruit soon, let me know when you're free Dawg.",
     "Well, well, well, if it isn't the one and only {mention}. We're glad to have you around."
+]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PERIODIC BROADCAST TEMPLATES
+# ═══════════════════════════════════════════════════════════════════════════
+# Sent by the `send_report_message` task loop on the configured interval
+# (config.timing.report_message_interval_minutes). Only fires when the OWS
+# toggle `periodic_broadcasts` is ON. Format placeholders:
+#   {server}          -> the guild's name
+#   {rules_channel}   -> mention of config.channels.rules
+#   {reports_channel} -> mention of config.channels.reports
+#
+# `send_report_message` passes these via .format() after brand_text() runs,
+# so any braces other than the documented ones will raise a KeyError.
+REPORT_TEMPLATES: List[str] = [
+    "📢 Reminder — read the rules in {rules_channel}. Everyone is expected to keep it clean.",
+    "🛡️ If you witness a rule break, report it in {reports_channel}. Do not engage.",
+    "💬 Keep the chat respectful. Toxicity gets muted, not rewarded.",
+    "🎫 Need support? Open a ticket with `/new` — staff will be with you shortly.",
+    "🔥 Stay active and climb the leaderboard. Top ranks earn perks.",
+    "👥 Bring your people. Every verified invite helps {server} grow.",
+    "🚨 No advertising, no leaks, no drama. We handle it quietly and permanently.",
+    "📌 Check the pinned messages in {rules_channel} for the latest updates.",
+    "⏰ Rules apply everywhere, including in DMs with staff.",
+    "💯 Shout out to everyone doing their part — the work never goes unnoticed.",
+    "🎯 Events and giveaways are posted in {rules_channel}. Keep notifications on.",
+    "🧹 Report spam in {reports_channel} instead of replying to it.",
 ]
 
 REPORT_CATEGORIES: Dict[str, str] = {
@@ -3324,8 +3601,7 @@ class TicketToolSystem:
         A per-user asyncio.Lock guards the limit check so two concurrent
         create requests can't both pass it.
         """
-        import uuid
-        ticket_id = str(uuid.uuid4())[:8]
+        ticket_id = str(_uuid.uuid4())[:8]
         now_iso = datetime.now(timezone.utc).isoformat()
 
         # Owner Settings gate: if the Tickets System is disabled, refuse all
@@ -3984,7 +4260,6 @@ class TicketToolSystem:
         `limit` caps the number of messages included (Ticket Tool caps
         transcripts at 1000 messages); None pulls the entire history.
         """
-        import uuid
         from io import BytesIO
         
         messages = []
@@ -4062,7 +4337,7 @@ class TicketToolSystem:
         html_content = self._generate_html_transcript(channel, ticket, messages, closed_by)
         
         # Save transcript to database
-        transcript_id = str(uuid.uuid4())[:8]
+        transcript_id = str(_uuid.uuid4())[:8]
         transcript_data = {
             'transcript_id': transcript_id,
             'ticket_id': ticket['ticket_id'],
@@ -5869,9 +6144,8 @@ class AddNoteModal(Modal, title="📝 Add Staff Note"):
         self.ticket_id = ticket_id
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        import uuid
         note = {
-            'note_id': str(uuid.uuid4())[:8],
+            'note_id': str(_uuid.uuid4())[:8],
             'ticket_id': self.ticket_id,
             'guild_id': interaction.guild.id,
             'author_id': interaction.user.id,
@@ -7011,6 +7285,32 @@ def load_blacklist_data() -> None:
         blacklisted_keywords = set()
 
 
+def load_warnings_data() -> None:
+    """Hydrate the in-memory warnings cache from SQLite on startup.
+
+    `warnings_data` is populated here so the `!warnings` list and the
+    auto-ban threshold check see every active warning immediately after a
+    restart. Previously the dict started empty on every boot, so the
+    auto-ban threshold silently reset (a user with 3 prior warnings would
+    need 3 MORE warnings before the ban fired).
+    """
+    global warnings_data
+    try:
+        loaded = data_manager.load_warnings()  # {user_id: [dict, ...]}
+        warnings_data = {}
+        for user_id, warn_list in loaded.items():
+            for w in warn_list:
+                gid = w.get('guild_id')
+                if gid is None:
+                    continue
+                warnings_data.setdefault(gid, []).append(w)
+        total = sum(len(v) for v in warnings_data.values())
+        logging.info(f"[Warnings] Hydrated {total} active warning(s) from SQLite")
+    except Exception as exc:
+        logging.error(f"[Warnings] Could not load warnings: {exc}")
+        warnings_data = {}
+
+
 def save_blacklist_data() -> None:
     try:
         data_manager.save_blacklist(blacklisted_keywords)
@@ -7228,8 +7528,30 @@ async def send_report_message() -> None:
     if not messages_enabled:
         return
     channel = bot.get_channel(config.channels.log)
-    if channel:
-        await channel.send(brand_text(random.choice(REPORT_TEMPLATES)))
+    if channel is None:
+        return
+
+    rules_channel_id = getattr(config.channels, "rules", 0)
+    reports_channel_id = getattr(config.channels, "reports", 0)
+    rules_channel_mention = f"<#{rules_channel_id}>" if rules_channel_id else "#rules"
+    reports_channel_mention = f"<#{reports_channel_id}>" if reports_channel_id else "#reports"
+
+    template = random.choice(REPORT_TEMPLATES)
+    try:
+        text = brand_text(template).format(
+            server=bot.user.name if bot.user else "the server",
+            rules_channel=rules_channel_mention,
+            reports_channel=reports_channel_mention,
+        )
+    except (KeyError, IndexError, ValueError) as exc:
+        # A malformed template never crashes the loop — log once and move on.
+        logging.warning(f"[Broadcast] template format failed, using raw text: {exc}")
+        text = brand_text(template)
+
+    try:
+        await channel.send(text)
+    except (discord.Forbidden, discord.HTTPException, discord.NotFound) as exc:
+        logging.warning(f"[Broadcast] could not send to log channel: {exc}")
 
 
 @tasks.loop(hours=config.timing.auto_scan_interval_hours)
@@ -7420,10 +7742,40 @@ def log_event(event_type: str, user: discord.User, details: Optional[str] = None
 
 # --- BOT EVENTS ---
 def signal_handler(sig, frame) -> None:
+    """Handle SIGINT/SIGTERM: save everything and exit cleanly.
+
+    Every step is wrapped so a failure in one (e.g. `data_manager.close()`
+    while a task is mid-write) doesn't abort the remaining cleanup or
+    leave the process in a half-dead state.
+    """
     logging.info("Shutdown signal received. Saving data...")
-    save_all_data()
-    data_manager.close()
-    process_manager.clear_lock_file()
+
+    # Persist whatever we can. If the DB was never connected, save_all_data
+    # skips cleanly (see its is_connected() guard).
+    try:
+        save_all_data()
+    except Exception as exc:
+        logging.error(f"[Shutdown] save_all_data failed: {exc}")
+
+    # Give any in-flight async writes a moment to drain. We can't await
+    # inside a signal handler, so this is a short synchronous sleep.
+    try:
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+    # Close the SQLite connection.
+    try:
+        data_manager.close()
+    except Exception as exc:
+        logging.error(f"[Shutdown] data_manager.close failed: {exc}")
+
+    # Clear the busy-lock file so the next launch doesn't see a stale lock.
+    try:
+        process_manager.clear_lock_file()
+    except Exception as exc:
+        logging.error(f"[Shutdown] clear_lock_file failed: {exc}")
+
     logging.info("Data saved. Goodbye!")
     sys.exit(0)
 
@@ -7850,14 +8202,16 @@ async def on_ready() -> None:
         if not send_report_message.is_running():
             send_report_message.start()
 
-    ticket_tool = TicketToolSystem(data_manager, bot)
-    # CRITICAL: expose the ticket system on the bot object. ~20 call sites in
-    # the TicketTool premium package resolve it via getattr(bot, 'ticket_tool')
-    # (escalation, flows, SLA breach checks, staff threads, transcripts,
-    # command helpers, on_owner_left...). Without this assignment every one of
-    # them silently degraded to "ticket system not initialized".
-    bot.ticket_tool = ticket_tool
-    logging.info("[TicketTool] Initialized ticket tool system")
+    # `ticket_tool` is created in setup_hook. This block just verifies it
+    # exists — if setup_hook silently failed we log loudly rather than
+    # letting ticket commands crash with AttributeError later.
+    if ticket_tool is None:
+        logging.error(
+            "[on_ready] ticket_tool is None! setup_hook may have failed. "
+            "Ticket commands will be unavailable until restart."
+        )
+    else:
+        logging.info("[on_ready] Ticket tool system confirmed available")
 
     # --- PREMIUM TIER 1 ON_READY HOOK ---
     # Sets up automation-engine global refs + starts the delayed-automation /
@@ -7890,7 +8244,7 @@ async def on_ready() -> None:
                 except (ValueError, TypeError):
                     continue
                 if isinstance(mapping, dict) and mapping:
-                    _reaction_panel_cache[row['message_id']] = mapping
+                    _cache_reaction_panel(row['message_id'], mapping)
         except Exception as exc:
             logging.warning(f"[ReactionPanel] cache warm failed in {guild.name}: {exc}")
     if _reaction_panel_cache:
@@ -8165,9 +8519,21 @@ class CommandCleanupView(View):
             except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                 pass
 
-# Global dictionary to temporarily hold page offsets and chain status for chained commands
-# Format: {message_id: (page_offset, is_chained)}
-_chain_offsets: Dict[int, Tuple[int, bool]] = {}
+# Global dictionary to temporarily hold page offsets and chain status for
+# chained commands. Format: {message_id: (page_offset, is_chained)}.
+# Bounded so a long-running bot cannot accumulate one entry per chained
+# command ever run.
+_chain_offsets: "OrderedDict[int, Tuple[int, bool]]" = OrderedDict()
+MAX_CHAIN_OFFSETS = 2000
+
+
+def _set_chain_offset(message_id: int, value: Tuple[int, bool]) -> None:
+    """Insert or refresh a chain-offset entry, evicting the oldest when the
+    cache exceeds MAX_CHAIN_OFFSETS."""
+    _chain_offsets[message_id] = value
+    _chain_offsets.move_to_end(message_id)
+    while len(_chain_offsets) > MAX_CHAIN_OFFSETS:
+        _chain_offsets.popitem(last=False)
 
 # =========================================================================
 # OWNER SETTINGS HELPERS
@@ -8339,13 +8705,14 @@ def _ows_apply_msgprune(v: bool) -> None:
         logging.warning(f"[OWS] msg-cache prune task toggle error: {exc}")
 
 def _ows_apply_invitetask(v: bool) -> None:
-    try:
-        if v and not check_invites_task.is_running():
-            check_invites_task.start()
-        elif not v and check_invites_task.is_running():
-            check_invites_task.cancel()
-    except Exception as exc:
-        logging.warning(f"[OWS] invite task toggle error: {exc}")
+    # Invite tracking is reactive (on_member_join / on_member_remove in
+    # cogs/invites.py) — there is no background @tasks.loop to start/stop.
+    # The enable_invite_tracking OWS flag is checked at runtime via
+    # ows_get("enable_invite_tracking") so the toggle takes effect
+    # immediately without a callback. (Previously this referenced
+    # `check_invites_task` which was never defined — a NameError logged on
+    # every toggle flip.)
+    pass
 
 OWS_TOGGLES: List[OWSToggle] = [
     OWSToggle("enable_leveling",        "Leveling System",       "XP gain, level-ups, /level, /leaderboard",                    "🧩 Core Systems", True,  "📊", _ows_apply_leveling),
@@ -8643,7 +9010,7 @@ class OwnerSettingsView(View):
         except Exception:
             pass
 
-@bot.command(name="ows", aliases=["OWS", "Ows", "ownerws", "ownersettings"])
+@bot.hybrid_command(name="ows", aliases=["OWS", "Ows", "ownerws", "ownersettings"])
 @commands.is_owner()
 async def ows_cmd(ctx: commands.Context) -> None:
     """Open the Owner Settings panel — toggle any bot feature on or off."""
@@ -8748,7 +9115,7 @@ async def process_potential_multi_command(message: discord.Message) -> None:
 
         cmd_name = part[len(prefix):].split(" ")[0].lower()
         chain_command_counts[cmd_name] = chain_command_counts.get(cmd_name, 0) + 1
-        _chain_offsets[msg_copy.id] = (chain_command_counts[cmd_name] - 1, is_chained)
+        _set_chain_offset(msg_copy.id, (chain_command_counts[cmd_name] - 1, is_chained))
 
         if bot.get_command(cmd_name) is not None:
             handled_here += 1
@@ -8936,7 +9303,12 @@ async def on_message(message: discord.Message) -> None:
                         pass
                     return
         if is_staff_msg:
-            data_manager.update_ticket_first_response(open_ticket['ticket_id'])
+            # Offload the synchronous SQLite write to a worker thread. The
+            # premium hook that follows can run concurrently — it doesn't
+            # depend on first_response_at being committed yet.
+            asyncio.create_task(asyncio.to_thread(
+                data_manager.update_ticket_first_response, open_ticket['ticket_id']
+            ))
 
             # --- PREMIUM TIER 1: on_ticket_message hook ---
             # Records the first staff response in the SLA state row, sets
@@ -8956,8 +9328,13 @@ async def on_message(message: discord.Message) -> None:
         # channel history as the primary source, but falls back to this table
         # if the channel history is empty/unavailable (e.g. messages were
         # bulk-deleted, or the channel was partially lost before close).
+        #
+        # Fire-and-forget: `async_save_ticket_message` already runs the write
+        # in a worker thread, but awaiting it here would serialise every
+        # ticket message behind the previous write. Scheduling it as a task
+        # lets multiple writes pipeline.
         try:
-            await data_manager.async_save_ticket_message({
+            payload = {
                 'message_id': message.id,
                 'ticket_id': open_ticket['ticket_id'],
                 'author_id': message.author.id,
@@ -8966,9 +9343,10 @@ async def on_message(message: discord.Message) -> None:
                 'content': message.content or '',
                 'attachments': json.dumps([att.url for att in message.attachments]),
                 'created_at': message.created_at.isoformat() if message.created_at else datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            asyncio.create_task(data_manager.async_save_ticket_message(payload))
         except Exception as exc:
-            logging.debug(f"[TicketMsg] could not persist ticket message {message.id}: {exc}")
+            logging.debug(f"[TicketMsg] could not schedule persistence for {message.id}: {exc}")
 
     # --- PREMIUM TIER 2: custom command prefix dispatch ---
     # If the message is a !-prefixed command that isn't a built-in, check if
@@ -8996,7 +9374,7 @@ async def on_message(message: discord.Message) -> None:
 
 
 # --- OWNER BRANDING AND CHANNEL SETUP COMMANDS ---
-@bot.command(name="abrev", aliases=["Abrev", "ABREV"])
+@bot.hybrid_command(name="abrev", aliases=["Abrev", "ABREV"])
 @commands.is_owner()
 async def abbrev_cmd(ctx: commands.Context, abbreviation: str) -> None:
     value = abbreviation.strip()
@@ -9009,7 +9387,7 @@ async def abbrev_cmd(ctx: commands.Context, abbreviation: str) -> None:
     await ctx.send(embed=EmbedBuilder.success("Gang Abbreviation Updated", f"Abbreviation set to **{config.gang_abbreviation}**"))
 
 
-@bot.command(name="setchannel")
+@bot.hybrid_command(name="setchannel")
 @commands.is_owner()
 async def setchannel_cmd(ctx: commands.Context, channel_type: str, channel: discord.TextChannel) -> None:
     valid_types = {
@@ -9647,6 +10025,14 @@ class SetupIntegerModal(Modal):
 
         _setup_set_value(self.slot, val)
 
+        # If the slot belongs to the `timing` config, push the new value
+        # into the running loops immediately — no restart required.
+        if self.slot.target == "timing":
+            try:
+                config.apply_timing_to_loops()
+            except Exception as exc:
+                logging.debug(f"[Setup] Could not apply timing to loops: {exc}")
+
         # Return to the main view with a refreshed embed.
         await interaction.response.edit_message(
             embed=self.main_view._refresh_main_embed(),
@@ -9669,7 +10055,7 @@ class SetupIntegerModal(Modal):
 # All use the same SetupMainView engine; only the slot list + permission differ.
 # ===========================================================================
 
-@bot.command(name="channelsetup",
+@bot.hybrid_command(name="channelsetup",
                     aliases=["ChannelSetup", "CHANNELSETUP"])
 # NOTE: the legacy "csetup"/"CSetup"/"CSETUP" aliases were removed — the
 # `!csetup` name now belongs to the guided setup panel in cogs/setup.py
@@ -9682,7 +10068,7 @@ async def channelsetup_cmd(ctx: commands.Context) -> None:
     view.message = await ctx.send(embed=_setup_main_embed("channels", CHANNEL_SETUP_SLOTS, ctx.guild), view=view)
 
 
-@bot.command(name="rolesetup",
+@bot.hybrid_command(name="rolesetup",
                     aliases=["RoleSetup", "ROLESETUP", "rsetup", "RSetup", "RSETUP"])
 @commands.has_permissions(manage_roles=True)
 @commands.guild_only()
@@ -9692,7 +10078,7 @@ async def rolesetup_cmd(ctx: commands.Context) -> None:
     view.message = await ctx.send(embed=_setup_main_embed("roles", ROLE_SETUP_SLOTS, ctx.guild), view=view)
 
 
-@bot.command(name="timingsetup",
+@bot.hybrid_command(name="timingsetup",
                     aliases=["TimingSetup", "TIMINGSETUP", "tsetup", "TSetup", "TSETUP"])
 @commands.has_permissions(manage_guild=True)
 @commands.guild_only()
@@ -9702,7 +10088,7 @@ async def timingsetup_cmd(ctx: commands.Context) -> None:
     view.message = await ctx.send(embed=_setup_main_embed("timing", TIMING_SETUP_SLOTS, ctx.guild), view=view)
 
 
-@bot.command(name="limitssetup",
+@bot.hybrid_command(name="limitssetup",
                     aliases=["LimitsSetup", "LIMITSSETUP", "lsetup", "LSetup", "LSETUP"])
 @commands.has_permissions(manage_guild=True)
 @commands.guild_only()
@@ -9713,30 +10099,28 @@ async def limitssetup_cmd(ctx: commands.Context) -> None:
 
 
 # --- MODERATION COMMANDS ---
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(kick_members=True)
-async def kick(ctx: commands.Context, members: commands.Greedy[discord.Member], *, reason: str = "No reason provided") -> None:
-    """Kicks one or multiple members. Usage: !kick @user1 @user2 [reason]"""
-    if not members:
-        await ctx.send("Usage: `!kick @user1 @user2 [reason]` (or `!kick @user1, @user2`)")
-        return
-
+@app_commands.describe(member="Member to kick", reason="Reason for kick")
+async def kick(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided") -> None:
+    """Kick a member. Usage: !kick @user [reason]"""
+    members = [member]
     kicked_list = []
     failed_list = []
 
-    for member in members:
-        if member.top_role >= ctx.guild.me.top_role or member.id == ctx.guild.owner_id:
-            failed_list.append(f"{member.mention} (Hierarchy/Owner)")
+    for m in members:
+        if m.top_role >= ctx.guild.me.top_role or m.id == ctx.guild.owner_id:
+            failed_list.append(f"{m.mention} (Hierarchy/Owner)")
             continue
         try:
-            await member.kick(reason=f"Kicked by {ctx.author}: {reason}")
-            kicked_list.append(member.mention)
+            await m.kick(reason=f"Kicked by {ctx.author}: {reason}")
+            kicked_list.append(m.mention)
         except discord.Forbidden:
-            failed_list.append(f"{member.mention} (Missing Perms)")
+            failed_list.append(f"{m.mention} (Missing Perms)")
         except discord.HTTPException:
-            failed_list.append(f"{member.mention} (API Error)")
+            failed_list.append(f"{m.mention} (API Error)")
 
-    embed = EmbedBuilder.success("Mass Kick Complete", "")
+    embed = EmbedBuilder.success("Member Kicked", "")
     if kicked_list:
         embed.add_field(name="✅ Successfully Kicked", value="\n".join(kicked_list), inline=False)
     if failed_list:
@@ -9747,30 +10131,28 @@ async def kick(ctx: commands.Context, members: commands.Greedy[discord.Member], 
     logging.info(f'User(s) {kicked_list} were kicked by {ctx.author} for: {reason}')
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(ban_members=True)
-async def ban(ctx: commands.Context, members: commands.Greedy[discord.Member], *, reason: str = "No reason provided") -> None:
-    """Bans one or multiple members. Usage: !ban @user1 @user2 [reason]"""
-    if not members:
-        await ctx.send("Usage: `!ban @user1 @user2 [reason]` (or `!ban @user1, @user2`)")
-        return
-
+@app_commands.describe(member="Member to ban", reason="Reason for ban")
+async def ban(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided") -> None:
+    """Ban a member. Usage: !ban @user [reason]"""
+    members = [member]
     banned_list = []
     failed_list = []
 
-    for member in members:
-        if member.top_role >= ctx.guild.me.top_role or member.id == ctx.guild.owner_id:
-            failed_list.append(f"{member.mention} (Hierarchy/Owner)")
+    for m in members:
+        if m.top_role >= ctx.guild.me.top_role or m.id == ctx.guild.owner_id:
+            failed_list.append(f"{m.mention} (Hierarchy/Owner)")
             continue
         try:
-            await member.ban(reason=f"Banned by {ctx.author}: {reason}", delete_message_days=0)
-            banned_list.append(member.mention)
+            await m.ban(reason=f"Banned by {ctx.author}: {reason}", delete_message_days=0)
+            banned_list.append(m.mention)
         except discord.Forbidden:
-            failed_list.append(f"{member.mention} (Missing Perms)")
+            failed_list.append(f"{m.mention} (Missing Perms)")
         except discord.HTTPException:
-            failed_list.append(f"{member.mention} (API Error)")
+            failed_list.append(f"{m.mention} (API Error)")
 
-    embed = EmbedBuilder.success("Mass Ban Complete", "")
+    embed = EmbedBuilder.success("Member Banned", "")
     if banned_list:
         embed.add_field(name="✅ Successfully Banned", value="\n".join(banned_list), inline=False)
     if failed_list:
@@ -9780,7 +10162,7 @@ async def ban(ctx: commands.Context, members: commands.Greedy[discord.Member], *
     await ctx.send(embed=embed)
     logging.info(f'User(s) {banned_list} were banned by {ctx.author} for: {reason}')
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(ban_members=True)
 async def banid(ctx: commands.Context, user_id: int, *, reason: str = "No reason provided") -> None:
     try:
@@ -9797,7 +10179,7 @@ async def banid(ctx: commands.Context, user_id: int, *, reason: str = "No reason
 
 
 # --- BLACKLIST COMMANDS ---
-@bot.command(name="blacklist", description="Add a keyword to the blacklist")
+@bot.hybrid_command(name="blacklist", description="Add a keyword to the blacklist")
 @commands.has_permissions(administrator=True)
 @app_commands.describe(keyword="The keyword to blacklist")
 async def blacklist_cmd(ctx: commands.Context, *, keyword: str) -> None:
@@ -9830,7 +10212,7 @@ async def blacklist_cmd(ctx: commands.Context, *, keyword: str) -> None:
     logging.info(f"[Blacklist] Keyword '{keyword}' added by {ctx.author}")
 
 
-@bot.command(name="unblacklist", description="Remove a keyword from the blacklist")
+@bot.hybrid_command(name="unblacklist", description="Remove a keyword from the blacklist")
 @commands.has_permissions(administrator=True)
 @app_commands.describe(keyword="The keyword to remove from the blacklist")
 async def unblacklist_cmd(ctx: commands.Context, *, keyword: str) -> None:
@@ -9850,7 +10232,7 @@ async def unblacklist_cmd(ctx: commands.Context, *, keyword: str) -> None:
     logging.info(f"[Blacklist] Keyword '{found_keyword}' removed by {ctx.author}")
 
 
-@bot.command(name="blacklistscan", description="Scan all members for blacklisted keywords")
+@bot.hybrid_command(name="blacklistscan", description="Scan all members for blacklisted keywords")
 @commands.has_permissions(administrator=True)
 async def blacklistscan_cmd(ctx: commands.Context) -> None:
     if not blacklisted_keywords:
@@ -9881,7 +10263,7 @@ async def blacklistscan_cmd(ctx: commands.Context) -> None:
     logging.info(f"[Blacklist] Scan complete by {ctx.author}. Banned: {banned_count}, Failed: {failed_count}")
 
 
-@bot.command(name="blacklistlist", description="Display all blacklisted keywords")
+@bot.hybrid_command(name="blacklistlist", description="Display all blacklisted keywords")
 @commands.has_permissions(administrator=True)
 async def blacklistlist_cmd(ctx: commands.Context) -> None:
     if not blacklisted_keywords:
@@ -9903,7 +10285,7 @@ async def blacklistlist_cmd(ctx: commands.Context) -> None:
     await ctx.send(embed=embed)
 
 
-@bot.command(name="checkprofile", description="Check a user's profile for blacklisted keywords")
+@bot.hybrid_command(name="checkprofile", description="Check a user's profile for blacklisted keywords")
 @app_commands.describe(member="The member to check")
 async def checkprofile_cmd(ctx: commands.Context, member: Optional[discord.Member] = None) -> None:
     if member is None:
@@ -10129,17 +10511,25 @@ class AutoPurgeManager:
 
 
 # Per-channel auto-purge managers (keyed by verification channel id).
-# There's normally one verification channel per server, but this map keeps
-# the design clean if multiple servers share the bot.
-auto_purge_managers: Dict[int, AutoPurgeManager] = {}
+# Bounded so a bot in many servers cannot accumulate managers for deleted
+# channels indefinitely.
+auto_purge_managers: "OrderedDict[int, AutoPurgeManager]" = OrderedDict()
+MAX_AUTO_PURGE_MANAGERS = 500
 
 
 def get_auto_purge_manager(channel_id: int) -> AutoPurgeManager:
-    """Get (or create) the AutoPurgeManager for a verification channel."""
+    """Get (or create) the AutoPurgeManager for a verification channel.
+
+    The returned manager is bumped to the most-recently-used position;
+    the oldest entry is evicted when the pool exceeds MAX_AUTO_PURGE_MANAGERS.
+    """
     mgr = auto_purge_managers.get(channel_id)
     if mgr is None:
         mgr = AutoPurgeManager(channel_id)
         auto_purge_managers[channel_id] = mgr
+    auto_purge_managers.move_to_end(channel_id)
+    while len(auto_purge_managers) > MAX_AUTO_PURGE_MANAGERS:
+        auto_purge_managers.popitem(last=False)
     return mgr
 
 
@@ -10175,7 +10565,7 @@ def is_verification_channel(channel_id: int, channel=None) -> bool:
     return False
 
 
-@bot.command(name="nopurge", description="Protect message(s) from auto-purge/purge/purgeall (verification channel only)")
+@bot.hybrid_command(name="nopurge", description="Protect message(s) from auto-purge/purge/purgeall (verification channel only)")
 @commands.has_permissions(manage_messages=True)
 @app_commands.describe(message_ids="One or more message IDs, separated by commas or spaces (right-click message -> Copy Message ID)")
 async def nopurge_cmd(ctx: commands.Context, *, message_ids: str) -> None:
@@ -10301,7 +10691,7 @@ async def nopurge_cmd(ctx: commands.Context, *, message_ids: str) -> None:
 
 
 # --- PURGE / CHANNEL COMMANDS ---
-@bot.command(name="purge", aliases=["purgeall"], description="Purge a specific amount of messages or the entire channel")
+@bot.hybrid_command(name="purge", aliases=["purgeall"], description="Purge a specific amount of messages or the entire channel")
 @commands.has_permissions(manage_messages=True)
 @app_commands.describe(
     amount="Number of messages to delete. Leave empty to delete the whole channel.",
@@ -10500,7 +10890,7 @@ async def purge_cmd(
                     pass
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_roles=True)
 async def mute(ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None) -> None:
     if config.roles.staff in [role.id for role in member.roles]:
@@ -10530,7 +10920,7 @@ async def mute(ctx: commands.Context, member: discord.Member, *, reason: Optiona
 # records in the database (so a manual unmute cancels a pending auto-unmute).
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_channels=True)
 async def lock(ctx: commands.Context) -> None:
     await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
@@ -10538,7 +10928,7 @@ async def lock(ctx: commands.Context) -> None:
     logging.info(f'Channel {ctx.channel} was locked by {ctx.author}')
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_channels=True)
 async def unlock(ctx: commands.Context) -> None:
     await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
@@ -10546,7 +10936,7 @@ async def unlock(ctx: commands.Context) -> None:
     logging.info(f'Channel {ctx.channel} was unlocked by {ctx.author}')
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_channels=True)
 async def slowmode(ctx: commands.Context, seconds: int) -> None:
     await ctx.channel.edit(slowmode_delay=seconds)
@@ -10554,7 +10944,7 @@ async def slowmode(ctx: commands.Context, seconds: int) -> None:
     logging.info(f'Slowmode in {ctx.channel} was set to {seconds}s by {ctx.author}')
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_roles=True)
 async def addrole(ctx: commands.Context, member: discord.Member, *, role_name: str) -> None:
     role = discord.utils.get(ctx.guild.roles, name=role_name)
@@ -10569,7 +10959,7 @@ async def addrole(ctx: commands.Context, member: discord.Member, *, role_name: s
     log_event("Role Added", ctx.author, f"Added {role_name} to {member}")
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_roles=True)
 async def roleall(ctx: commands.Context, role: discord.Role) -> None:
     if role is None:
@@ -10593,7 +10983,7 @@ async def roleall(ctx: commands.Context, role: discord.Role) -> None:
     log_event("Role All Assigned", ctx.author, f"Assigned {role.name} to {members_assigned} members")
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_roles=True)
 async def removerole(ctx: commands.Context, member: discord.Member, role: discord.Role) -> None:
     try:
@@ -10606,7 +10996,7 @@ async def removerole(ctx: commands.Context, member: discord.Member, role: discor
         await ctx.send("Failed to remove the role. Please try again.")
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(ban_members=True)
 async def softban(ctx: commands.Context, member: discord.Member, *, reason: Optional[str] = None) -> None:
     await member.ban(reason=reason)
@@ -10615,7 +11005,7 @@ async def softban(ctx: commands.Context, member: discord.Member, *, reason: Opti
     logging.info(f'User {member} was softbanned by {ctx.author} for: {reason}')
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_roles=True)
 async def tempmute(ctx: commands.Context, member: discord.Member, duration: int, *, reason: Optional[str] = None) -> None:
     """
@@ -10803,7 +11193,7 @@ async def before_prune_message_cache() -> None:
     await bot.wait_until_ready()
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_roles=True)
 async def unmute(ctx: commands.Context, member: discord.Member) -> None:
     """Manually unmute a member early, deactivating any active temp-mute."""
@@ -10834,34 +11224,50 @@ async def unmute(ctx: commands.Context, member: discord.Member) -> None:
 
 
 # --- WARNING COMMANDS (V2 Enhancement) ---
-@bot.command(name="warn", description="Warn a member")
+@bot.hybrid_command(name="warn", description="Warn a member")
 @commands.has_permissions(manage_roles=True)
 @app_commands.describe(member="Member to warn", reason="Reason for warning")
 async def warn_cmd(ctx: commands.Context, member: discord.Member, *, reason: str) -> None:
     if not config.enable_warnings:
         await ctx.send("Warning system is disabled.")
         return
-    
-    import uuid
-    warning_id = str(uuid.uuid4())[:8]
-    
+
+    warning_id = str(_uuid.uuid4())[:8]
     warning = {
         'warning_id': warning_id,
         'user_id': member.id,
         'guild_id': ctx.guild.id,
         'moderator_id': ctx.author.id,
+        'warning_type': WarningType.CUSTOM.value,
         'reason': reason,
         'points': 1,
         'created_at': datetime.now(timezone.utc).isoformat(),
-        'is_active': True
+        'expires_at': None,
+        'is_active': True,
     }
-    
+
+    # Persist to SQLite FIRST. If the write fails we abort — a warning that
+    # only exists in memory would be silently lost on the next restart and
+    # could let a repeat-offender slip past the auto-ban threshold.
+    try:
+        data_manager.save_warning(warning)
+    except Exception as exc:
+        logging.error(f"[Warnings] Could not persist warning for {member.id}: {exc}")
+        await ctx.send(embed=EmbedBuilder.error(
+            "Warning Failed",
+            "Could not save the warning to the database — please try again.",
+        ))
+        return
+
     if ctx.guild.id not in warnings_data:
         warnings_data[ctx.guild.id] = []
     warnings_data[ctx.guild.id].append(warning)
-    
-    total_points = sum(1 for w in warnings_data[ctx.guild.id] if w['user_id'] == member.id and w['is_active'])
-    
+
+    total_points = sum(
+        1 for w in warnings_data[ctx.guild.id]
+        if w['user_id'] == member.id and w.get('is_active')
+    )
+
     embed = EmbedBuilder.warning(
         "Member Warned",
         f"{member.mention} has been warned.\n"
@@ -10869,20 +11275,25 @@ async def warn_cmd(ctx: commands.Context, member: discord.Member, *, reason: str
         f"**Warning ID:** {warning_id}\n"
         f"**Total Points:** {total_points}/{config.limits.max_warnings_before_ban}"
     )
-    
     await ctx.send(embed=embed)
-    
+
     if total_points >= config.limits.max_warnings_before_ban and ows_get("warnings_auto_ban"):
         try:
             await member.ban(reason=f"Exceeded warning limit ({total_points} points)")
-            await ctx.send(embed=EmbedBuilder.error("Auto-Ban", f"{member.mention} has been auto-banned for exceeding warning limit."))
-        except:
-            pass
-    
+            await ctx.send(embed=EmbedBuilder.error(
+                "Auto-Ban",
+                f"{member.mention} has been auto-banned for exceeding the warning limit "
+                f"({total_points}/{config.limits.max_warnings_before_ban})."
+            ))
+        except discord.Forbidden:
+            logging.warning(f"[Warnings] No permission to auto-ban {member}")
+        except discord.HTTPException as exc:
+            logging.error(f"[Warnings] HTTP error auto-banning {member}: {exc}")
+
     logging.info(f"[Warnings] {member} warned by {ctx.author}: {reason}")
 
 
-@bot.command(name="warnings", description="View warnings for a member")
+@bot.hybrid_command(name="warnings", description="View warnings for a member")
 @app_commands.describe(member="Member to check")
 async def warnings_cmd(ctx: commands.Context, member: Optional[discord.Member] = None) -> None:
     member = member or ctx.author
@@ -10907,29 +11318,41 @@ async def warnings_cmd(ctx: commands.Context, member: Optional[discord.Member] =
     await ctx.send(embed=embed)
 
 
-@bot.command(name="clearwarnings", description="Clear warnings for a member")
+@bot.hybrid_command(name="clearwarnings", description="Clear warnings for a member")
 @commands.has_permissions(administrator=True)
 @app_commands.describe(member="Member to clear warnings for")
 async def clearwarnings_cmd(ctx: commands.Context, member: discord.Member) -> None:
-    global warnings_data
-    
-    if ctx.guild.id not in warnings_data:
+    guild_warnings = warnings_data.get(ctx.guild.id, [])
+    if not guild_warnings:
         await ctx.send(f"{member.mention} has no warnings.")
         return
-    
+
     count = 0
-    for w in warnings_data[ctx.guild.id]:
-        if w['user_id'] == member.id and w['is_active']:
+    for w in guild_warnings:
+        if w['user_id'] == member.id and w.get('is_active'):
             w['is_active'] = False
+            try:
+                data_manager.delete_warning(w['warning_id'])
+            except Exception as exc:
+                logging.warning(
+                    f"[Warnings] Could not deactivate {w['warning_id']}: {exc}"
+                )
             count += 1
-    
-    await ctx.send(embed=EmbedBuilder.success("Warnings Cleared", f"Cleared {count} warning(s) for {member.mention}."))
+
+    if count == 0:
+        await ctx.send(f"{member.mention} has no active warnings.")
+        return
+
+    await ctx.send(embed=EmbedBuilder.success(
+        "Warnings Cleared",
+        f"Cleared {count} active warning(s) for {member.mention}."
+    ))
     logging.info(f"[Warnings] {ctx.author} cleared {count} warnings for {member}")
 
 
 # =============================================================================
 # --- TICKET TOOL COMMANDS (Full Ticket Tool Clone) ---
-@bot.command(name="panel", description="Create a new ticket panel")
+@bot.hybrid_command(name="panel", description="Create a new ticket panel")
 @commands.has_permissions(manage_channels=True)
 async def create_panel(ctx: commands.Context) -> None:
     """Open the interactive panel creator."""
@@ -10950,7 +11373,7 @@ async def create_panel(ctx: commands.Context) -> None:
     await ctx.send(embed=embed, view=view)
 
 
-@bot.command(name="tcategory", description="Manage ticket categories (internal ticket folders)")
+@bot.hybrid_command(name="tcategory", description="Manage ticket categories (internal ticket folders)")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 async def ticket_category_cmd(ctx: commands.Context) -> None:
@@ -10967,7 +11390,7 @@ async def ticket_category_cmd(ctx: commands.Context) -> None:
     view.message = message
 
 
-@bot.command(name="setcategory", description="Change the ticket category of this ticket (staff)")
+@bot.hybrid_command(name="setcategory", description="Change the ticket category of this ticket (staff)")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 async def set_ticket_category_cmd(ctx: commands.Context) -> None:
@@ -10996,7 +11419,7 @@ async def set_ticket_category_cmd(ctx: commands.Context) -> None:
     )
 
 
-@bot.command(name="panels", description="List all ticket panels")
+@bot.hybrid_command(name="panels", description="List all ticket panels")
 @commands.has_permissions(manage_channels=True)
 async def list_panels(ctx: commands.Context) -> None:
     """List all ticket panels in this server."""
@@ -11024,7 +11447,7 @@ async def list_panels(ctx: commands.Context) -> None:
     await ctx.send(embed=embed)
 
 
-@bot.command(name="deletepanel", description="Delete a ticket panel")
+@bot.hybrid_command(name="deletepanel", description="Delete a ticket panel")
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(panel_id="The panel ID to delete")
 async def delete_panel(ctx: commands.Context, panel_id: str) -> None:
@@ -11048,7 +11471,7 @@ async def delete_panel(ctx: commands.Context, panel_id: str) -> None:
     await ctx.send(f"Panel `{panel_id}` has been deleted.")
 
 
-@bot.command(name="claim", description="Claim the current ticket")
+@bot.hybrid_command(name="claim", description="Claim the current ticket")
 async def claim_ticket_cmd(ctx: commands.Context) -> None:
     """Claim a ticket."""
     if not ticket_tool:
@@ -11063,7 +11486,7 @@ async def claim_ticket_cmd(ctx: commands.Context) -> None:
         await ctx.send(message)
 
 
-@bot.command(name="unclaim", description="Release your claim on this ticket")
+@bot.hybrid_command(name="unclaim", description="Release your claim on this ticket")
 async def unclaim_ticket_cmd(ctx: commands.Context) -> None:
     """Release a ticket claim."""
     if not ticket_tool:
@@ -11078,7 +11501,7 @@ async def unclaim_ticket_cmd(ctx: commands.Context) -> None:
         await ctx.send(message)
 
 
-@bot.command(name="close", description="Close the current ticket")
+@bot.hybrid_command(name="close", description="Close the current ticket")
 @app_commands.describe(reason="Reason for closing")
 async def close_ticket_cmd(ctx: commands.Context, *, reason: str = "No reason provided") -> None:
     """Close a ticket with optional reason.
@@ -11112,7 +11535,7 @@ async def close_ticket_cmd(ctx: commands.Context, *, reason: str = "No reason pr
         await ctx.send(message, view=view)
 
 
-@bot.command(name="closerequest", aliases=["ca", "closereq"], description="Request staff to close this ticket (TicketTool-style)")
+@bot.hybrid_command(name="closerequest", aliases=["ca", "closereq"], description="Request staff to close this ticket (TicketTool-style)")
 @_guild_scoped()
 @app_commands.describe(reason="Why should this ticket be closed?")
 async def close_request_cmd(ctx: commands.Context, *, reason: str = "No reason provided") -> None:
@@ -11167,7 +11590,7 @@ async def close_request_cmd(ctx: commands.Context, *, reason: str = "No reason p
 # TICKET AUTOMATION PAUSE / RESUME (Ticket Tool /pause + /resume)
 # =============================================================================
 
-@bot.command(name="pause", description="Pause ALL automations for this ticket")
+@bot.hybrid_command(name="pause", description="Pause ALL automations for this ticket")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(duration="How long: 30m, 1h, 2d, 1w — omit for an indefinite pause")
@@ -11235,7 +11658,7 @@ async def pause_ticket_cmd(ctx: commands.Context, duration: Optional[str] = None
     logging.info(f"[Pause] {ctx.author} paused ticket {ticket['ticket_id']} (duration={duration or 'indefinite'})")
 
 
-@bot.command(name="resume", description="Resume automations for this paused ticket")
+@bot.hybrid_command(name="resume", description="Resume automations for this paused ticket")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 async def resume_ticket_cmd(ctx: commands.Context) -> None:
@@ -11376,7 +11799,7 @@ class ManualRatingView(View):
         self.stop()
 
 
-@bot.command(name="rate", description="Send the rating prompt to this ticket's creator")
+@bot.hybrid_command(name="rate", description="Send the rating prompt to this ticket's creator")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 async def rate_ticket_cmd(ctx: commands.Context) -> None:
@@ -11429,7 +11852,7 @@ def _format_age(iso_raw: Optional[str]) -> str:
     return f"{minutes}m"
 
 
-@bot.command(name="ticket-info", description="Show full status info for this ticket")
+@bot.hybrid_command(name="ticket-info", description="Show full status info for this ticket")
 @_guild_scoped()
 async def ticket_info_cmd(ctx: commands.Context) -> None:
     """Ticket Tool-style ticket status overview: creator, category, priority,
@@ -11558,7 +11981,7 @@ async def ticket_info_cmd(ctx: commands.Context) -> None:
     await ctx.send(embed=embed)
 
 
-@bot.command(name="private", description="Make this ticket private (hidden from other staff)")
+@bot.hybrid_command(name="private", description="Make this ticket private (hidden from other staff)")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 async def private_ticket_cmd(ctx: commands.Context) -> None:
@@ -11609,7 +12032,7 @@ async def private_ticket_cmd(ctx: commands.Context) -> None:
     logging.info(f"[Tickets] {ctx.author} made ticket {ticket['ticket_id']} private")
 
 
-@bot.command(name="unprivate", description="Restore staff access to this private ticket")
+@bot.hybrid_command(name="unprivate", description="Restore staff access to this private ticket")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 async def unprivate_ticket_cmd(ctx: commands.Context) -> None:
@@ -11659,7 +12082,7 @@ async def unprivate_ticket_cmd(ctx: commands.Context) -> None:
     logging.info(f"[Tickets] {ctx.author} restored ticket {ticket['ticket_id']} to non-private")
 
 
-@bot.command(name="tickethelp", description="Show every ticket-system command by category")
+@bot.hybrid_command(name="tickethelp", description="Show every ticket-system command by category")
 @_guild_scoped()
 async def ticket_help_cmd(ctx: commands.Context) -> None:
     """Ticket Tool-style /help: categorized command discovery for the whole
@@ -11724,7 +12147,7 @@ async def ticket_help_cmd(ctx: commands.Context) -> None:
     await ctx.send(embed=embed)
 
 
-@bot.command(name="transcript", description="Generate a transcript of this ticket")
+@bot.hybrid_command(name="transcript", description="Generate a transcript of this ticket")
 @app_commands.describe(
     channel="Optional channel to send the transcript to",
     lines="Max number of messages to include (default: all)",
@@ -11754,7 +12177,7 @@ async def transcript_cmd(ctx: commands.Context, channel: Optional[discord.TextCh
         await ctx.send(embed=transcript['embed'], file=transcript['file'])
 
 
-@bot.command(name="panelquestion", description="Manage the questions (form) shown before a ticket is created")
+@bot.hybrid_command(name="panelquestion", description="Manage the questions (form) shown before a ticket is created")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(
@@ -11864,7 +12287,7 @@ async def panel_question_cmd(
     await ctx.send("Unknown action. Use `add`, `remove`, or `list`.")
 
 
-@bot.command(name="limitbypass", description="Set roles that bypass the ticket limits for a panel")
+@bot.hybrid_command(name="limitbypass", description="Set roles that bypass the ticket limits for a panel")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(
@@ -11911,7 +12334,7 @@ async def limit_bypass_cmd(ctx: commands.Context, panel_id: str, roles: str) -> 
     ))
 
 
-@bot.command(name="panelupdate", description="Refresh an existing panel message (TicketTool-style Update)")
+@bot.hybrid_command(name="panelupdate", description="Refresh an existing panel message (TicketTool-style Update)")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(panel_id="Panel ID to refresh (see /panels)")
@@ -12045,7 +12468,7 @@ def _parse_panel_id_list(raw: str, guild_id: int) -> Tuple[List[Dict], Optional[
     return panels, None
 
 
-@bot.command(name="multipanel", description="Combine up to 25 panels into ONE message (TicketTool Attached Panels)")
+@bot.hybrid_command(name="multipanel", description="Combine up to 25 panels into ONE message (TicketTool Attached Panels)")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(
@@ -12084,7 +12507,7 @@ async def multi_panel_cmd(ctx: commands.Context, panels: str, per_row: int = 5) 
     logging.info(f"[TicketTool] {ctx.author} created a {len(panel_rows)}-panel multi-panel in #{ctx.channel.name}")
 
 
-@bot.command(name="dropdownpanel", description="Create a dropdown-style panel (select menu routes to a panel)")
+@bot.hybrid_command(name="dropdownpanel", description="Create a dropdown-style panel (select menu routes to a panel)")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(
@@ -12122,7 +12545,7 @@ async def dropdown_panel_cmd(ctx: commands.Context, panels: str, placeholder: Op
     logging.info(f"[TicketTool] {ctx.author} created a {len(panel_rows)}-option dropdown panel in #{ctx.channel.name}")
 
 
-@bot.command(name="reactionpanel", description="Create a reaction-based ticket panel (react to open a ticket)")
+@bot.hybrid_command(name="reactionpanel", description="Create a reaction-based ticket panel (react to open a ticket)")
 @_guild_scoped()
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(
@@ -12203,7 +12626,7 @@ async def reaction_panel_cmd(ctx: commands.Context, panels: str, emojis: str, ti
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             failed.append(emoji)
     # Warm the in-memory lookup cache.
-    _reaction_panel_cache[message.id] = mapping
+    _cache_reaction_panel(message.id, mapping)
     if failed:
         await ctx.send(
             f"⚠️ Reaction panel saved, but these emojis could not be added (the bot "
@@ -12220,9 +12643,21 @@ async def reaction_panel_cmd(ctx: commands.Context, panels: str, emojis: str, ti
 
 
 # In-memory reaction-panel lookup cache: {message_id: {emoji: panel_id}}.
-# Populated on startup (on_ready) and on /reactionpanel; a DB fallback keeps
-# it correct even if a row was added by another process.
-_reaction_panel_cache: Dict[int, Dict[str, str]] = {}
+# Bounded to MAX_REACTION_PANEL_CACHE entries (LRU by insertion order) so a
+# long-running bot cannot leak memory. Populated on startup and on
+# `/reactionpanel`; a DB fallback keeps it correct if a row was added by
+# another process.
+_reaction_panel_cache: "OrderedDict[int, Dict[str, str]]" = OrderedDict()
+MAX_REACTION_PANEL_CACHE = 5000
+
+
+def _cache_reaction_panel(message_id: int, mapping: Dict[str, str]) -> None:
+    """Insert or refresh a reaction-panel cache entry, evicting the oldest
+    entry when the cache exceeds MAX_REACTION_PANEL_CACHE."""
+    _reaction_panel_cache[message_id] = mapping
+    _reaction_panel_cache.move_to_end(message_id)
+    while len(_reaction_panel_cache) > MAX_REACTION_PANEL_CACHE:
+        _reaction_panel_cache.popitem(last=False)
 
 
 def _get_reaction_panel_mapping(message_id: int) -> Optional[Dict[str, str]]:
@@ -12230,6 +12665,7 @@ def _get_reaction_panel_mapping(message_id: int) -> Optional[Dict[str, str]]:
     first and the reaction_panels table as fallback."""
     cached = _reaction_panel_cache.get(message_id)
     if cached is not None:
+        _reaction_panel_cache.move_to_end(message_id)
         return cached
     try:
         row = data_manager.load_reaction_panel(message_id)
@@ -12243,7 +12679,7 @@ def _get_reaction_panel_mapping(message_id: int) -> Optional[Dict[str, str]]:
         return None
     if not isinstance(mapping, dict) or not mapping:
         return None
-    _reaction_panel_cache[message_id] = mapping
+    _cache_reaction_panel(message_id, mapping)
     return mapping
 
 
@@ -12347,7 +12783,7 @@ async def _resolve_command_style_panel(guild: discord.Guild, panel_id: Optional[
     return None, f"This server has multiple panels — specify one: {listing}"
 
 
-@bot.command(name="new", description="Open a new ticket (command-style, TicketTool $new)")
+@bot.hybrid_command(name="new", description="Open a new ticket (command-style, TicketTool $new)")
 @_guild_scoped()
 @app_commands.describe(
     user="Open on behalf of this user (staff only)",
@@ -12437,7 +12873,7 @@ async def new_ticket_cmd(
         await ctx.send(f"Failed to create ticket: {result}")
 
 
-@bot.command(name="ticket", description="Open a new ticket (alias of /new)")
+@bot.hybrid_command(name="ticket", description="Open a new ticket (alias of /new)")
 @_guild_scoped()
 @app_commands.describe(
     user="Open on behalf of this user (staff only)",
@@ -12455,7 +12891,7 @@ async def ticket_cmd_alias(
     await new_ticket_cmd(ctx, user, panel_id, reason=reason)
 
 
-@bot.command(name="ticketdebug", description="Ticket system diagnostics (TicketTool $debug)")
+@bot.hybrid_command(name="ticketdebug", description="Ticket system diagnostics (TicketTool $debug)")
 @_guild_scoped()
 async def ticket_debug_cmd(ctx: commands.Context) -> None:
     """Show the ticket-system configuration + the bot's permission status,
@@ -12515,7 +12951,7 @@ async def ticket_debug_cmd(ctx: commands.Context) -> None:
     await ctx.send(embed=embed)
 
 
-@bot.command(name="permissionlevel", description="Show your ticket-system permission level (TicketTool $permissionlevel)")
+@bot.hybrid_command(name="permissionlevel", description="Show your ticket-system permission level (TicketTool $permissionlevel)")
 @_guild_scoped()
 async def permission_level_cmd(ctx: commands.Context) -> None:
     """Report the invoker's effective ticket-system access level,
@@ -12557,7 +12993,7 @@ async def permission_level_cmd(ctx: commands.Context) -> None:
     await ctx.send(embed=embed)
 
 
-@bot.command(name="ticketlog", description="Configure the ticket log channel and logged events")
+@bot.hybrid_command(name="ticketlog", description="Configure the ticket log channel and logged events")
 @_guild_scoped()
 @commands.has_permissions(manage_guild=True)
 @app_commands.describe(
@@ -12614,7 +13050,7 @@ async def ticket_log_cmd(ctx: commands.Context, channel: Optional[discord.TextCh
     ))
 
 
-@bot.command(name="ticketsettings", description="Configure ticket system settings")
+@bot.hybrid_command(name="ticketsettings", description="Configure ticket system settings")
 @commands.has_permissions(manage_guild=True)
 async def ticket_settings_cmd(ctx: commands.Context) -> None:
     """Open ticket settings configuration."""
@@ -12888,14 +13324,13 @@ class SetSupportRoleModal(Modal, title="Set Support Role"):
             await interaction.response.send_message("Please enter a valid number.", ephemeral=True)
 
 
-@bot.command(name="ticketblacklist", description="Blacklist a user from creating tickets")
+@bot.hybrid_command(name="ticketblacklist", description="Blacklist a user from creating tickets")
 @commands.has_permissions(manage_guild=True)
 @app_commands.describe(user="User to blacklist", reason="Reason for blacklist")
 async def ticket_blacklist_cmd(ctx: commands.Context, user: discord.Member, *, reason: str = "No reason provided") -> None:
     """Blacklist a user from creating tickets."""
-    import uuid
     blacklist_data = {
-        'blacklist_id': str(uuid.uuid4())[:8],
+        'blacklist_id': str(_uuid.uuid4())[:8],
         'guild_id': ctx.guild.id,
         'user_id': user.id,
         'reason': reason,
@@ -12911,7 +13346,7 @@ async def ticket_blacklist_cmd(ctx: commands.Context, user: discord.Member, *, r
     ))
 
 
-@bot.command(name="ticketunblacklist", description="Remove a user from the ticket blacklist")
+@bot.hybrid_command(name="ticketunblacklist", description="Remove a user from the ticket blacklist")
 @commands.has_permissions(manage_guild=True)
 @app_commands.describe(user="User to unblacklist")
 async def ticket_unblacklist_cmd(ctx: commands.Context, user: discord.Member) -> None:
@@ -12923,7 +13358,7 @@ async def ticket_unblacklist_cmd(ctx: commands.Context, user: discord.Member) ->
         await ctx.send(f"{user.mention} is not blacklisted.")
 
 
-@bot.command(name="tickets", description="View open tickets")
+@bot.hybrid_command(name="tickets", description="View open tickets")
 @commands.has_permissions(manage_channels=True)
 async def view_tickets_cmd(ctx: commands.Context) -> None:
     tickets = data_manager.load_tickets_by_guild(ctx.guild.id, 'open')
@@ -12993,7 +13428,7 @@ async def _ticket_respond(ctx: commands.Context, content: Optional[str] = None, 
         await ctx.send(content, embed=embed)
 
 
-@bot.command(name="add", description="Add a user or role to the current ticket")
+@bot.hybrid_command(name="add", description="Add a user or role to the current ticket")
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(user="User to add to this ticket", role="Role to add to this ticket")
 async def ticket_add_cmd(ctx: commands.Context, user: Optional[discord.Member] = None, role: Optional[discord.Role] = None) -> None:
@@ -13024,7 +13459,7 @@ async def ticket_add_cmd(ctx: commands.Context, user: Optional[discord.Member] =
     logging.info(f"[Tickets] {ctx.author} added {target} to ticket {ticket['ticket_id']}")
 
 
-@bot.command(name="remove", description="Remove a user or role from the current ticket")
+@bot.hybrid_command(name="remove", description="Remove a user or role from the current ticket")
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(user="User to remove from this ticket", role="Role to remove from this ticket")
 async def ticket_remove_cmd(ctx: commands.Context, user: Optional[discord.Member] = None, role: Optional[discord.Role] = None) -> None:
@@ -13052,7 +13487,7 @@ async def ticket_remove_cmd(ctx: commands.Context, user: Optional[discord.Member
     logging.info(f"[Tickets] {ctx.author} removed {target} from ticket {ticket['ticket_id']}")
 
 
-@bot.command(name="rename", description="Rename the current ticket channel")
+@bot.hybrid_command(name="rename", description="Rename the current ticket channel")
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(name="New channel name (no spaces)")
 async def ticket_rename_cmd(ctx: commands.Context, *, name: str) -> None:
@@ -13074,7 +13509,7 @@ async def ticket_rename_cmd(ctx: commands.Context, *, name: str) -> None:
     ))
 
 
-@bot.command(name="move", description="Move the ticket to a different panel category")
+@bot.hybrid_command(name="move", description="Move the ticket to a different panel category")
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(panel_id="Panel ID to move this ticket under")
 async def ticket_move_cmd(ctx: commands.Context, panel_id: str) -> None:
@@ -13104,7 +13539,7 @@ async def ticket_move_cmd(ctx: commands.Context, panel_id: str) -> None:
     ))
 
 
-@bot.command(name="note", description="Add a private staff note to this ticket")
+@bot.hybrid_command(name="note", description="Add a private staff note to this ticket")
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(content="Note content (only staff can view these)")
 async def ticket_note_cmd(ctx: commands.Context, *, content: str) -> None:
@@ -13112,9 +13547,8 @@ async def ticket_note_cmd(ctx: commands.Context, *, content: str) -> None:
     if not ticket:
         await _ticket_respond(ctx, "This is not a ticket channel.", ephemeral=True)
         return
-    import uuid
     note = {
-        'note_id': str(uuid.uuid4())[:8],
+        'note_id': str(_uuid.uuid4())[:8],
         'ticket_id': ticket['ticket_id'],
         'guild_id': ctx.guild.id,
         'author_id': ctx.author.id,
@@ -13130,7 +13564,7 @@ async def ticket_note_cmd(ctx: commands.Context, *, content: str) -> None:
     ).set_footer(text=f"By {ctx.author.display_name} • ID: {note['note_id']}"), ephemeral=True)
 
 
-@bot.command(name="notes", description="View all staff notes for this ticket")
+@bot.hybrid_command(name="notes", description="View all staff notes for this ticket")
 @commands.has_permissions(manage_channels=True)
 async def ticket_notes_cmd(ctx: commands.Context) -> None:
     ticket = data_manager.load_ticket_by_channel(ctx.channel.id)
@@ -13158,7 +13592,7 @@ async def ticket_notes_cmd(ctx: commands.Context) -> None:
     await _ticket_respond(ctx, embed=embed, ephemeral=True)
 
 
-@bot.command(name="priority", description="Set the priority of the current ticket")
+@bot.hybrid_command(name="priority", description="Set the priority of the current ticket")
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(level="Priority level: low, normal, high, urgent")
 @app_commands.choices(level=[
@@ -13188,7 +13622,7 @@ async def ticket_priority_cmd(ctx: commands.Context, level: str) -> None:
     ))
 
 
-@bot.command(name="reopen", description="Reopen a closed ticket")
+@bot.hybrid_command(name="reopen", description="Reopen a closed ticket")
 @commands.has_permissions(manage_channels=True)
 @app_commands.describe(ticket_id="The ticket ID to reopen")
 async def ticket_reopen_cmd(ctx: commands.Context, ticket_id: str) -> None:
@@ -13301,7 +13735,7 @@ async def ticket_reopen_cmd(ctx: commands.Context, ticket_id: str) -> None:
             logging.warning(f"[Premium] on_ticket_reopen failed: {exc}")
 
 
-@bot.command(name="ticketstats", description="View ticket statistics for this server")
+@bot.hybrid_command(name="ticketstats", description="View ticket statistics for this server")
 @commands.has_permissions(manage_channels=True)
 async def ticket_stats_cmd(ctx: commands.Context) -> None:
     stats = data_manager.load_ticket_stats(ctx.guild.id)
@@ -13333,7 +13767,7 @@ async def ticket_stats_cmd(ctx: commands.Context) -> None:
     await ctx.send(embed=embed)
 
 
-@bot.command(name="dbcleanup", description="Scan the database and remove stale, invalid, or unused data")
+@bot.hybrid_command(name="dbcleanup", description="Scan the database and remove stale, invalid, or unused data")
 @commands.has_permissions(administrator=True)
 async def dbcleanup_cmd(ctx: commands.Context) -> None:
     """
@@ -13461,27 +13895,21 @@ async def dbcleanup_cmd(ctx: commands.Context) -> None:
         report_lines.append("🚫 **Ticket Blacklist** — ✅ no expired entries")
 
     # ─── 4. COUNT ORPHANED CHILD ROWS (preview before deleting) ─────────────
-    cursor = data_manager._connection.cursor()
+    # All counts go through the public DataManager API so we never touch
+    # `_connection` directly (which would bypass the write lock and share
+    # the connection across threads without synchronisation).
+    orphan_answers     = data_manager.count_orphan_rows(
+        'ticket_answers',     'ticket_id', valid_ticket_ids)
+    orphan_notes       = data_manager.count_orphan_rows(
+        'ticket_notes',       'ticket_id', valid_ticket_ids)
+    orphan_messages    = data_manager.count_orphan_rows(
+        'ticket_messages',    'ticket_id', valid_ticket_ids)
+    orphan_transcripts = data_manager.count_orphan_rows(
+        'ticket_transcripts', 'ticket_id', valid_ticket_ids)
+    orphan_questions   = data_manager.count_orphan_rows(
+        'ticket_questions',   'panel_id',  valid_panel_ids)
 
-    def count_orphans(table: str, fk_col: str, valid_ids: set) -> int:
-        if not valid_ids:
-            cursor.execute(f'SELECT COUNT(*) FROM {table}')
-        else:
-            ph = ','.join('?' * len(valid_ids))
-            cursor.execute(
-                f'SELECT COUNT(*) FROM {table} WHERE {fk_col} NOT IN ({ph})',
-                list(valid_ids)
-            )
-        return cursor.fetchone()[0]
-
-    orphan_answers    = count_orphans('ticket_answers',     'ticket_id', valid_ticket_ids)
-    orphan_notes      = count_orphans('ticket_notes',       'ticket_id', valid_ticket_ids)
-    orphan_messages   = count_orphans('ticket_messages',    'ticket_id', valid_ticket_ids)
-    orphan_transcripts= count_orphans('ticket_transcripts', 'ticket_id', valid_ticket_ids)
-    orphan_questions  = count_orphans('ticket_questions',   'panel_id',  valid_panel_ids)
-
-    cursor.execute('SELECT COUNT(*) FROM warnings WHERE is_active = 0')
-    inactive_warnings = cursor.fetchone()[0]
+    inactive_warnings = data_manager.count_inactive_warnings()
 
     child_total = orphan_answers + orphan_notes + orphan_messages + orphan_questions
 
@@ -13506,8 +13934,7 @@ async def dbcleanup_cmd(ctx: commands.Context) -> None:
         report_lines.append("⚠️ **Warnings** — ✅ no inactive rows")
 
     # ─── 5. INVITE HISTORY ────────────────────────────────────────────────────
-    cursor.execute('SELECT COUNT(*) FROM invite_history WHERE guild_id = ?', (ctx.guild.id,))
-    archived_invites_count = cursor.fetchone()[0]
+    archived_invites_count = data_manager.count_invite_history(ctx.guild.id)
     clear_invite_history_flag = archived_invites_count > 0
 
     if clear_invite_history_flag:
@@ -13660,7 +14087,7 @@ class DBCleanupConfirmView(View):
         )
         self.stop()
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(manage_roles=True)
 async def securitycheck(ctx: commands.Context, member: discord.Member) -> None:
     embed = discord.Embed(title=f"Security Check: {member.display_name}", color=discord.Color.blue())
@@ -13693,7 +14120,7 @@ async def securitycheck(ctx: commands.Context, member: discord.Member) -> None:
 
 
 # --- SHUTDOWN & STATUS COMMANDS ---
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(administrator=True)
 async def shutdown(ctx: commands.Context) -> None:
     if process_manager.is_busy():
@@ -13708,7 +14135,7 @@ async def shutdown(ctx: commands.Context) -> None:
     await bot.close()
 
 
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(administrator=True)
 async def botstatus(ctx: commands.Context) -> None:
     embed = discord.Embed(title="Bot Status", color=discord.Color.blue())
@@ -13727,7 +14154,7 @@ async def botstatus(ctx: commands.Context) -> None:
 
 
 # --- AUDIT LOG ---
-@bot.command()
+@bot.hybrid_command()
 @commands.has_permissions(view_audit_log=True)
 async def auditlog(ctx: commands.Context, limit: int = 10) -> None:
     try:
@@ -13984,7 +14411,7 @@ class StickyRoleSystem:
             return 0
 
 
-@bot.group(name="stickyrole", aliases=["stickyroles", "sr"], description="Sticky Roles (Dyno premium — re-apply on rejoin)")
+@bot.hybrid_group(name="stickyrole", aliases=["stickyroles", "sr"], description="Sticky Roles (Dyno premium — re-apply on rejoin)", invoke_without_command=True)
 @app_commands.default_permissions(manage_roles=True)
 async def sticky_group(ctx: commands.Context) -> None:
     if ctx.invoked_subcommand is None:
@@ -14124,13 +14551,19 @@ class MessageLogSystem:
 
     @staticmethod
     def cache(message: discord.Message) -> None:
-        """Snapshot a message so we can recover its original content on edit/delete."""
+        """Snapshot a message so we can recover its original content on
+        edit/delete.
+
+        Called from `on_message` for EVERY message in a msglog-enabled
+        channel. The SQLite write is dispatched to a worker thread via
+        `asyncio.create_task(asyncio.to_thread(...))` so the message handler
+        never blocks the gateway.
+        """
         if message.guild is None:
             return
         cfg = MessageLogSystem.get_config(message.guild.id)
         if not cfg.get('enabled'):
             return
-        # Don't cache messages in ignored channels.
         if MessageLogSystem.is_channel_ignored(cfg, message.channel.id):
             return
         try:
@@ -14142,7 +14575,7 @@ class MessageLogSystem:
                     'proxy_url': getattr(a, 'proxy_url', None),
                     'size': getattr(a, 'size', None),
                 })
-            data_manager.cache_message({
+            payload = {
                 'message_id': message.id,
                 'guild_id': message.guild.id,
                 'channel_id': message.channel.id,
@@ -14151,9 +14584,13 @@ class MessageLogSystem:
                 'content': message.content or '',
                 'attachments': json.dumps(attachments),
                 'created_at': datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            # Fire-and-forget: the write is offloaded to a thread; the caller
+            # doesn't need to await it. `create_task` also serialises ordering
+            # via the event loop's task scheduling.
+            asyncio.create_task(asyncio.to_thread(data_manager.cache_message, payload))
         except Exception as exc:
-            logging.debug(f"[MsgLog] cache failed: {exc}")
+            logging.debug(f"[MsgLog] cache scheduling failed: {exc}")
 
     @staticmethod
     async def log_delete(message: "discord.Message") -> None:
@@ -14340,7 +14777,7 @@ class MessageLogSystem:
         MessageLogSystem.cache(after)
 
 
-@bot.group(name="msglog", description="Full Message Logging (Dyno premium — edits + deletes with content)")
+@bot.hybrid_group(name="msglog", description="Full Message Logging (Dyno premium — edits + deletes with content)", invoke_without_command=True)
 @app_commands.default_permissions(manage_guild=True)
 async def msglog_group(ctx: commands.Context) -> None:
     if ctx.invoked_subcommand is None:
@@ -14470,7 +14907,7 @@ async def msglog_status(ctx: commands.Context) -> None:
 # =========================================================================
 # 4) CUSTOM BOT BRANDING — avatar / banner / footer (premium feel)
 # =========================================================================
-@bot.group(name="botbranding", aliases=["branding"], description="Custom Bot Branding (avatar / banner / footer)")
+@bot.hybrid_group(name="botbranding", aliases=["branding"], description="Custom Bot Branding (avatar / banner / footer)", invoke_without_command=True)
 @app_commands.default_permissions(manage_guild=True)
 async def branding_group(ctx: commands.Context) -> None:
     if ctx.invoked_subcommand is None:
@@ -14703,6 +15140,86 @@ async def on_message_delete(message: discord.Message) -> None:
 
 
 @bot.event
+async def on_raw_bulk_message_delete(payload: "discord.RawBulkMessageDeleteEvent") -> None:
+    """Log mass message deletions.
+
+    `TextChannel.purge()` and `delete_messages()` (used by `!purge`,
+    `!purgeall`, and the verification auto-purge) fire this event ONCE for
+    the whole batch instead of `on_message_delete` per message. Without
+    this handler, mass-purges were invisible to the msg-log system.
+    """
+    if not instance_handles('mod'):
+        return
+    if not payload.message_ids:
+        return
+
+    guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
+    if guild is None:
+        return
+    channel = guild.get_channel_or_thread(payload.channel_id)
+    if channel is None:
+        return
+
+    # Recover the message content we still have cached. `on_message` writes
+    # a snapshot into `message_log_cache` for every message while msglog is
+    # on, so we can reconstruct the batch even though Discord already
+    # deleted it.
+    cached_messages: List[Any] = []
+    for mid in payload.message_ids:
+        cached = data_manager.load_cached_message(mid)
+        if not cached:
+            continue
+        author = None
+        try:
+            author = guild.get_member(int(cached['author_id']))
+        except Exception:
+            author = None
+        # Minimal stub that MessageLogSystem.log_bulk_delete can render.
+        stub = _BulkDeleteStub(
+            message_id=mid,
+            content=cached.get('content') or '',
+            author=author,
+            attachments=[],
+        )
+        cached_messages.append(stub)
+
+    if cached_messages:
+        try:
+            await MessageLogSystem.log_bulk_delete(
+                cached_messages,
+                bot.user,
+                channel,
+                reason=f"bulk message delete ({len(payload.message_ids)} messages)",
+            )
+        except Exception as exc:
+            logging.warning(f"[MsgLog] bulk-delete log failed: {exc}")
+        return
+
+    # Nothing cached: still log a summary so staff know a purge happened.
+    try:
+        cfg = MessageLogSystem.get_config(guild.id)
+        if not cfg.get('enabled'):
+            return
+        log_channel = guild.get_channel(cfg.get('log_channel_id') or 0)
+        if log_channel is None:
+            return
+        embed = discord.Embed(
+            title=f"🧹 Bulk Delete — {len(payload.message_ids)} message(s)",
+            description=(
+                f"**Channel:** {channel.mention}\n"
+                f"**Count:** {len(payload.message_ids)}\n"
+                f"*(No cached content — messages were deleted too quickly or "
+                f"before msglog cached them.)*"
+            ),
+            color=discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        await log_channel.send(embed=embed)
+    except Exception as exc:
+        logging.debug(f"[MsgLog] bulk-delete summary failed: {exc}")
+
+
+@bot.event
 async def on_message_edit(before: discord.Message, after: discord.Message) -> None:
     if not instance_handles('mod'):
         return
@@ -14793,7 +15310,7 @@ async def on_app_command_error(
 #   !sync          -> global sync (may take up to 1 hour to appear)
 #   !sync <guild>  -> per-guild sync (instant, great for testing)
 # ------------------------------------------------------------------
-@bot.command(name="sync", description="Re-sync slash commands (owner only)")
+@bot.hybrid_command(name="sync", description="Re-sync slash commands (owner only)")
 @commands.is_owner()
 @app_commands.describe(
     guild_id="Optional guild id for instant per-guild sync. Omit for global sync."
@@ -15038,7 +15555,7 @@ class GetAllRolesView(View):
             await interaction.followup.send(f"{header}```\n{chunk}\n```", ephemeral=True)
 
 
-@bot.command(name="getallroles", aliases=["roles", "listroles"], description="Get a list of all roles and their IDs (owner only)")
+@bot.hybrid_command(name="getallroles", aliases=["roles", "listroles"], description="Get a list of all roles and their IDs (owner only)")
 @commands.is_owner()
 @commands.guild_only()
 async def getallroles_cmd(ctx: commands.Context) -> None:
@@ -15064,7 +15581,7 @@ async def getallroles_cmd(ctx: commands.Context) -> None:
 # ------------------------------------------------------------------
 # Owner-only command to re-send the setup tutorial on demand.
 # ------------------------------------------------------------------
-@bot.command(name="tutorial", description="Re-send the bot setup tutorial to your DMs (owner only)")
+@bot.hybrid_command(name="tutorial", description="Re-send the bot setup tutorial to your DMs (owner only)")
 @commands.is_owner()
 async def tutorial_cmd(ctx: commands.Context) -> None:
     """Re-send the full setup tutorial to the owner's DMs."""
@@ -15473,6 +15990,10 @@ def main() -> None:
         save_all_data()
         process_manager.clear_lock_file()
 
+
+# Register the timing appliers now that `send_report_message` and
+# `auto_blacklist_scan` have been defined at module level.
+_register_timing_appliers()
 
 if __name__ == "__main__":
     print(f"[Startup] Module loaded completely. {len(bot.commands)} commands registered. Starting main()...")

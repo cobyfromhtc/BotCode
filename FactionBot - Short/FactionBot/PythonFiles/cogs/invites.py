@@ -475,6 +475,13 @@ class InviteTrackingCog(commands.Cog, name="InviteTracking"):
         except (discord.Forbidden, discord.HTTPException) as exc:
             log.warning("Could not fetch invites during join in guild %s: %s", guild.id, exc)
             fresh_list = None
+            # The cached snapshot can no longer be diffed against reality, so
+            # drop it. The NEXT join then runs through the "unprimed" path
+            # (correctly reported as `unknown`) rather than being silently
+            # mis-attributed against two-joins-ago state.
+            self._cache.pop(guild.id, None)
+            self._invite_objs.pop(guild.id, None)
+            self._last_refresh.pop(guild.id, None)
 
         attributed_code = CODE_UNKNOWN
         inviter_id = 0

@@ -16,6 +16,7 @@ helpers) comes from :mod:`cogs.botkit` — this module never imports Bot.py.
 """
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import hashlib
 import logging
@@ -462,7 +463,16 @@ class AutoModCog(commands.Cog, name="AutoMod"):
             self._rules_cache.pop(guild_id, None)
 
     async def _load_rules(self, guild_id: int) -> List[Dict[str, Any]]:
-        rows = botkit.fetchall(
+        """Load and cache this guild's automod rules.
+
+        `botkit.fetchall` is a synchronous SQLite read that opens a new
+        connection. Running it directly inside an `async def` blocked the
+        event loop while the periodic cache refresh visited every guild —
+        on a 500-guild bot that's 500 blocking reads in one tick. We push
+        the read to a worker thread so the loop stays responsive.
+        """
+        rows = await asyncio.to_thread(
+            botkit.fetchall,
             "SELECT * FROM automod_rules WHERE guild_id=? ORDER BY priority ASC, id ASC",
             (guild_id,),
         )
